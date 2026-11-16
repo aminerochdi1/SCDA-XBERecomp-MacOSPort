@@ -71,12 +71,20 @@ During the macOS Apple Silicon porting process, several architecture-specific hu
 4. **Input Subsystem (Keyboard & Mouse Mapping):**  
    *Issue:* The original codebase relied on Windows-specific `RAWINPUT` (`WM_INPUT`) and `GetAsyncKeyState` (which were stubbed to return 0 on non-Windows platforms), causing all keyboard and mouse inputs to be ignored.  
    *Fix:* Implemented a native SDL3 event pipeline with lock-free atomic key states, scancode-to-virtual-key translation, relative mouse motion accumulation for camera look, and smart mouse grab toggling between gameplay and menus.
+5. **Freeze on "SAVING GAME..." After Iceland Part 1:**  
+   *Issue:* When completing the first section of the introductory Iceland mission (`x01_iceland_a`) and transitioning to Part 2 (`x01_iceland_b`), the game became permanently frozen on the *"SAVING GAME... Please don't close the game or turn off your PC"* screen at ~11.9 FPS. This was caused by two issues: the engine requested map texture and sound streaming banks from the virtual cache drive `Z:\Default\...` which did not exist on host file systems, and the volume of asset loads hit macOS's conservative default file descriptor limits (`EMFILE: Too many open files`).  
+   *Fix:* Implemented an automatic path-redirection fallback in `NtCreateFile` and `NtOpenFile` (`src/kernel/files.cpp`) to route unmapped `Z:\Default` requests directly to the mounted disc image `D:\Default`. Additionally, raised the macOS process file descriptor limit via `setrlimit(RLIMIT_NOFILE, 10240)` in `main.cpp`, allowing seamless level transitions and checkpoint saving.
+6. **Shadow Acne & Visual Artifacts ("Polygons" / Checkerboard Glitches):**  
+   *Issue:* Severe cross-hatching, square tiles, and blocky stair-stepping appeared across characters, snow, cliffs, and night vision. This was caused by zero depth bias during shadow map comparison (`LIN_D16`), shadow samplers falling back to `VK_FILTER_NEAREST` instead of hardware Percentage-Closer Filtering (PCF), and an LSB register combiner sum condition bug.  
+   *Fix:* Injected constant depth bias in `shadow()`, enforced `VK_FILTER_LINEAR` on MoltenVK comparison samplers, and normalized register combiner sum thresholds in `shaders.cpp`.
 
 ---
 
 ## Roadmap (Things We Are Willing to Do)
 - [x] **Fix Presentation Blit in MoltenVK:** Fully resolved! The game renders smoothly with hardware acceleration on Apple Silicon.
 - [x] **Implement Full Keyboard & Mouse Support via SDL3:** Fully implemented with smart mouse capture.
+- [x] **Fix Level Transition & Save Screen Hang:** Resolved "SAVING GAME..." checkpoint freeze when transitioning to Iceland Part 2.
+- [x] **Shadow Acne & Artifact Elimination:** Fixed self-shadowing acne and blocky PCF artifacts on Apple Silicon.
 - [ ] **Multiplayer Testing:** Verify online/LAN Co-op and Versus multiplayer on macOS.
 - [ ] **macOS Application Bundle:** Create a standalone `.app` bundle with drag-and-drop installation.
 
