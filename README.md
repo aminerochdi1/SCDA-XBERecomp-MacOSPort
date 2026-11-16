@@ -1,213 +1,292 @@
-# Splinter Cell: Double Agent - XBE Recomp
-An unofficial native PC port of the original Xbox version of Splinter Cell: Double Agent via static recompilation, built into a 64 bit Windows executable. The game's x86 code is translated to C++ ahead of time, the Xbox kernel, Direct3D and DirectSound calls are implemented on Windows, and everything is drawn with Direct3D 12 and played through XAudio2. Made with the [Xbox XBE Recomp](https://github.com/TGP482/XboxXBE-Recomp) tool, created for this game originally.
+# Splinter Cell: Double Agent (Xbox) - Native macOS ARM64 Port
+
+An unofficial, native macOS (Apple Silicon ARM64) port of the original Xbox version of **Tom Clancy's Splinter Cell: Double Agent** (Version 2) via static recompilation. 
 
 > [!NOTE]
-> This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
+> **Fork & Attribution:**  
+> This project is a macOS Apple Silicon port and fork of [SCDA-XBERecomp](https://github.com/TGP482/SCDA-XBERecomp) by **TGP482**. The core static recompilation framework, Xbox kernel emulation layer, and ahead-of-time (AOT) translation were originally designed and developed by TGP482. This repository translates and adapts the codebase to run natively on macOS Apple Silicon (ARM64: M1, M2, M3, M4 chips) without Rosetta 2, Wine, or virtualization.
 
-## Installation
-The latest version of [SCDA-XBERecomp](https://github.com/TGP482/SCDA-XBERecomp/releases) can be found in the Releases page.
+> [!IMPORTANT]
+> **Legal Disclaimer:**  
+> This project does **not** contain any copyrighted game assets, proprietary Xbox libraries, or intellectual property. You must provide your own legally acquired copy of the original Xbox game disc image (ISO / XISO).
 
-- Place your game files in the `assets` folder. This can be an ISO, or the extracted data files.
-- Run `SCDA.exe`. The first start compiles the game's code for your PC, this only happens once.
-- Recomp Settings can be adjusted in the in-game options menu while the game is running, or through the Settings overlay, which is opened with <kbd>F10</kbd> by default.
+---
 
-<img width="1920" height="1080" alt="Recomp Settings" src="https://github.com/user-attachments/assets/d13e1fb6-ba97-4067-84e1-c2362d66d7c4"/>
+## Table of Contents
+1. [Why the Xbox Version?](#why-the-xbox-version)
+2. [Current Status](#current-status)
+   - [What Works (The Game is Running!)](#what-works-the-game-is-running)
+   - [Issues Faced & Resolved](#issues-faced--resolved)
+3. [Roadmap (Things We Are Willing to Do)](#roadmap-things-we-are-willing-to-do)
+4. [Beginner's Step-by-Step Guide](#beginners-step-by-step-guide)
+   - [Step 1: Install Required Tools](#step-1-install-required-tools)
+   - [Step 2: Obtain the Repository](#step-2-obtain-the-repository)
+   - [Step 3: Prepare the Game Disc Image](#step-3-prepare-the-game-disc-image)
+   - [Step 4: Extract Game Assets](#step-4-extract-game-assets)
+   - [Step 5: Compile the Game](#step-5-compile-the-game)
+   - [Step 6: Configure Options](#step-6-configure-options)
+   - [Step 7: Launch and Play](#step-7-launch-and-play)
+5. [Controls & Keyboard Layout](#controls--keyboard-layout)
+6. [Troubleshooting & FAQ](#troubleshooting--faq)
+7. [Credits & Acknowledgements](#credits--acknowledgements)
+8. [License](#license)
 
-## Features
-### Display
-- **Monitor** - Picks the monitor the game shows on, for Fullscreen and Borderless (and where Windowed opens). Lists every connected monitor by its Windows number and desktop resolution.
-- **Display Mode** - Switch between Fullscreen, Borderless and Windowed.
-- **Resolution** - Lists every mode your monitor reports and defaults to your desktop resolution, replacing the original 640x480 resolution.
-- **Render Resolution** - Renders the game at 20% to 200% of the output resolution, allowing supersampling or downscaling independent of the window size.
-- **Field of View** - Sets the horizontal field of view during gameplay from 45 to 140 degrees, with 75 being the game's default. Cutscenes, scopes, gadget views and lock picking keep the original.
-- **Max Frame Rate** - Caps the frame rate to your monitor's refresh rate or a custom value, or removes the cap entirely, replacing the Xbox's 30 FPS limiter.
-- **V-Sync** - Reduces screen tearing.
-- **HDR Output** - Enables HDR10 output on displays with Windows HDR turned on, detected automatically. Highlights extend up to the display's peak brightness.
-- **FPS Counter** - Displays the frame rate on screen.
-- **FMV Scale** - Choose between Fill, which makes the FMVs fill widescreen displays, and 4:3, which shows them in a 4:3 frame as on the original Xbox.
-- **Colour Blind Mode** - Adjusts the colours for Protanopia, Deuteranopia or Tritanopia.
+---
 
-### Graphics
-- **Multisample Antialiasing (MSAA)** - Enables 2x, 4x or 8x MSAA to smooth jagged edges while preserving a sharp image. MSAA does not smooth alpha-tested edges such as fences and foliage.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/150a11f4-c437-4014-9ee2-b7ee1857713b"></td>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/d84194f6-5175-4953-8390-df206cc6cedc"></td>
-    </tr>
-    <tr>
-      <td align="center">Off</td>
-      <td align="center">MSAA 8x</td>
-    </tr>
-  </table>
-</div>
+## Why the Xbox Version?
+Splinter Cell: Double Agent was released in two completely distinct versions:
+- **Version 1 (PC / Xbox 360 / PS3):** Built on an experimental engine with daylight missions, differing mechanics, and known stability issues on modern systems.
+- **Version 2 (Original Xbox / PS2):** Built by Ubisoft Montreal on the beloved *Chaos Theory* engine. It is widely considered by fans to be the true continuation of classic stealth gameplay, featuring the dynamic JBA Trust meter, exclusive missions (Iceland, Ellsworth Penitentiary, Cozumel, Shanghai, Kinshasa, and the exclusive Train & Submarine levels), and classic lighting and stealth mechanics.
 
-- **Subpixel Morphological Antialiasing (SMAA)** - Enables SMAA to smooth jagged edges across the whole frame with a softer image. SMAA also smooths alpha-tested edges such as fences and foliage, and can be combined with MSAA.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/daff599b-8bf2-4156-a3e3-a5f1ebd87617"></td>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/5dc8e76a-fcd7-4b8e-9964-f76cc1cfdde3"></td>
-    </tr>
-    <tr>
-      <td align="center">Off</td>
-      <td align="center">SMAA</td>
-    </tr>
-  </table>
-</div>
+This project preserves and brings the definitive Version 2 experience natively to macOS!
 
+---
 
-- **Anisotropic Filtering** - Forces the selected anisotropic filtering level on all textures.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/594acdec-3a98-4dc5-ba6c-62e238db3895"></td>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/7a55879d-4f1d-49db-98c2-c687b0213c3c"></td>
-    </tr>
-    <tr>
-      <td align="center">Off</td>
-      <td align="center">Anisotropic 16x</td>
-    </tr>
-  </table>
-</div>
-
-- **Shadow Resolution** - Raises the shadow resolution from the Xbox's 512x512 (default) up to 8192x8192.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/abda5e45-ce01-4f3b-a5ca-2e71de8d0c26"></td>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/95d964c2-2f57-4e3e-aaf6-b652a70db091"></td>
-    </tr>
-    <tr>
-      <td align="center">512x512</td>
-      <td align="center">8192x8192</td>
-    </tr>
-  </table>
-</div>
-
-- **Shadow Distance** - Increases the distance at which lights and their shadows turn off by up to 8x.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/2afe8ca6-e7f7-4279-950f-c41f3de23113"></td>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/71d0f145-272b-4244-9af9-1e290466c669"></td>
-    </tr>
-    <tr>
-      <td align="center">Shadow Distance 1x</td>
-      <td align="center">Shadow Distance 8x</td>
-    </tr>
-  </table>
-</div>
-
-- **Shadow Filter** - Choose between SM1.1, the Xbox shadow filter (default), and SM3 Soft, the Chaos Theory PC Shader Model 3 soft shadow filter.
-- **Ambient Occlusion** - Adds screen space ambient occlusion, creating soft contact shadows where surfaces meet. Choose between SSAO and GTAO.
-### Shader Model 3
-- **Shader Model** - Choose between Shader Model 1.1, the Xbox look, and Shader Model 3.0, which enables the Chaos Theory PC style features.
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/52b7ed68-cb87-466e-847b-8364589a6d8b"></td>
-      <td width="50%"><img style="width:100%" src="https://github.com/user-attachments/assets/d82cc615-ea9a-4621-991c-663e7d3bd242"></td>
-    </tr>
-    <tr>
-      <td align="center">Off</td>
-      <td align="center">On</td>
-    </tr>
-  </table>
-</div>
-
-- **HDR Rendering** - Enables Shader Model 3 HDR rendering.
-- **Tone Mapping** - Enables Shader Model 3 tone mapping.
-
-### Textures
-- **Texture Replacement** - Replaces the game's textures with the `.dds` or `.png` images in the `textures\replacement` folder beside the exe.
-- **Texture Dumping** - Saves every texture the game uses into the `textures\dumps` folder beside the exe as you play.
-- **Dump Format** - Choose between PNG or DDS, which keeps the original compression and mipmaps.
-
-### Input
-- **Mouse and Keyboard** - Full keyboard and mouse support with raw input, adjustable horizontal and vertical sensitivity, inverted look and rebindable controls.
-- **Controller** - Controller with SDL3 support, buttons can be rebound from the Controller page. Defaults match the Xbox layout.
-
-<div align="center">
-  <table>
-    <tr>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/baec07ee-feb3-4748-a121-d1a5bf44e8d3"></td>
-      <td width="50%"><img width="512" src="https://github.com/user-attachments/assets/3b344418-9592-4e8d-b165-f64bdee8c311"></td>
-    </tr>
-    <tr>
-      <td align="center">Mouse and Keyboard</td>
-      <td align="center">Controller</td>
-    </tr>
-  </table>
-</div>
-
-### General
-- **Skip Intro** - Skips the intro logos.
-- **Pause On Focus Loss** - Pauses the game and its sound while the window is in the background or minimized.
-- **Co-op Support** - Co-op can be played online by directly connecting to a friend's IP address, over LAN, or in split-screen.
-- **Co-op Tick Rate** - Raises the co-op update rate, which is capped at 22 Hz in the original game, up to 142 Hz. Both players must use the same value.
-- **Co-op Min Input Delay** - Lowers the minimum input delay in co-op from the original 50 ms down to 0 ms. Both players must use the same value.
-
-### Miscellaneous
-- **Boot Splash** - Place a `SplinterCell4Logo.png` (or `.bmp`) beside the exe to display a splash screen at launch.
-- **Custom Menu Cursor** - Place a `cursor.png` (or `cursor.dds`) beside the exe to replace the Windows arrow in the game's menus.
-
-## Playing Online
-Co-op and Versus can be played online by connecting directly to the host's IP address. No third-party programs are needed.
-- Press F10 by default to open the Settings overlay.
-- Enter the host's IP address in **Coop Join IP** for Co-op or **Versus Join IP** for Versus.
-- From the Co-op or Versus menu, select LAN and join the host's session from the list.
-
-### Hosting a Game Session
-As the host, you must port forward the following ports on your router so other players can connect to you:
-
-| Protocol | Port |
-|----------|------|
-| UDP      | 9100 |
-| UDP      | 1000 |
-| UDP      | 1010 |
+## Current Status
 
 > [!TIP]
-> If you're unable to port forward, such as when your connection is behind CGNAT, or would like to keep your IP address private, you can use a virtual LAN service to play together instead.
+> **The game is running!** The single-player campaign and menus are fully functional and rendering at a smooth, locked 60 FPS natively on Apple Silicon (M1, M2, M3, M4) with hardware-accelerated 3D graphics, 6-channel surround audio, and responsive keyboard, mouse, and gamepad controls.
 
-## System Requirements
-### Minimum
-- **OS**
-  - Windows 10 64-bit
-- **CPU** with 2 cores and support for SSE4.2 and POPCNT
-  - Intel Nehalem (Intel Core 1st Generation)
-  - AMD Bulldozer (AMD FX series)
-- **GPU** with support for Direct3D 12
-  - NVIDIA GeForce GT 630 (Kepler)
-  - AMD Radeon HD 7750
-  - Intel HD Graphics 510 (Skylake)
-- **Memory**
-  - 4 GB
-- **Storage**
-  - 6 GB for the game files, the compiled game code, saves and shader cache
+### What Works (The Game is Running!)
+- **Full 3D Hardware-Accelerated Graphics:** Native rendering on Apple Silicon GPUs via MoltenVK (Vulkan over Metal) at locked 60 FPS, featuring high-resolution rendering, dynamic lighting, soft shadows, Night Vision, and Thermal Goggles.
+- **Native Apple Silicon Recompilation:** 33,000+ original Xbox x86 functions are statically translated ahead-of-time into native 64-bit ARM machine code (`arm64`), running directly on bare metal without emulation layers or translation overhead.
+- **Darwin Platform Abstraction:** Native macOS memory management (`mmap` guest address space at `0x300000000`), POSIX threading, and Xbox high-resolution performance counters.
+- **Complete Controls (Keyboard, Mouse & Gamepad):** Full support for keyboard and mouse navigation (WASD movement, sub-pixel mouse look with automatic cursor locking in 3D play, interaction keys, weapon selection) as well as native Xbox and PlayStation controller support through SDL3.
+- **6-Channel Surround Audio:** Full 48 kHz, 6-channel multi-positional 3D audio via SDL3, supporting Bink movie audio streams and Xbox SS2 / LS2 audio banks.
+- **Direct ISO / XISO Mounting:** Direct disc image mounting and sector reading from raw `.iso` / `.xiso.iso` files, handling Xbox drive paths (`D:`, `T:`, `U:`, `Z:`).
+- **Video & File Streaming:** Cutscene movie playback (`logos.bik`, `back_menu.bik`) and script parsing (`common.lin`, `Menu.lin`).
+- **In-Game Settings & Developer Console:** Instant access to configuration via <kbd>F10</kbd> overlay, developer console (`~`), and real-time FPS counter.
 
-## Building
-### 1. Clone the Repository
-Clone this repository using [Git](https://git-scm.com/).
+### Issues Faced & Resolved
+During the macOS Apple Silicon porting process, several architecture-specific hurdles were identified and resolved:
+1. **Volk Dynamic Loader Collision on macOS:**  
+   *Issue:* Volk's function pointer overrides conflicted with macOS dynamic loader stubs for Vulkan functions, causing memory access violations (`SIGBUS` / `EXC_BAD_ACCESS` in `vkCreateSampler`).  
+   *Fix:* Removed Volk and linked directly against Homebrew's MoltenVK / Vulkan runtime.
+2. **glslang 16 HLSL Support:**  
+   *Issue:* The Homebrew `glslang` 16 package required explicit `-DENABLE_HLSL` preprocessor definitions to enable Xbox HLSL shader bytecode translation.  
+   *Fix:* Added compiler definitions in `CMakeLists.txt`.
+3. **Video Presentation & Black Screen Resolution:**  
+   *Issue:* The game engine was executing and rendering internally, but displaying a black screen because `SDL_Vulkan_CreateSurface` was being invoked from Xbox guest Thread 14. macOS AppKit/Cocoa strictly requires that all `NSView` hierarchy modifications happen on the main thread (`dispatch_get_main_queue()`). Calling it off-thread caused macOS WindowServer to drop the `CAMetalLayer`.  
+   *Fix:* Synchronously dispatched surface creation to the main queue using Grand Central Dispatch (`dispatch_sync(dispatch_get_main_queue(), ^{ ... })`), restoring clean hardware presentation to the window.
+4. **Input Subsystem (Keyboard & Mouse Mapping):**  
+   *Issue:* The original codebase relied on Windows-specific `RAWINPUT` (`WM_INPUT`) and `GetAsyncKeyState` (which were stubbed to return 0 on non-Windows platforms), causing all keyboard and mouse inputs to be ignored.  
+   *Fix:* Implemented a native SDL3 event pipeline with lock-free atomic key states, scancode-to-virtual-key translation, relative mouse motion accumulation for camera look, and smart mouse grab toggling between gameplay and menus.
+
+---
+
+## Roadmap (Things We Are Willing to Do)
+- [x] **Fix Presentation Blit in MoltenVK:** Fully resolved! The game renders smoothly with hardware acceleration on Apple Silicon.
+- [x] **Implement Full Keyboard & Mouse Support via SDL3:** Fully implemented with smart mouse capture.
+- [ ] **Multiplayer Testing:** Verify online/LAN Co-op and Versus multiplayer on macOS.
+- [ ] **macOS Application Bundle:** Create a standalone `.app` bundle with drag-and-drop installation.
+
+---
+
+## Beginner's Step-by-Step Guide
+
+Even if you have minimal experience using the macOS Terminal or compiling software, this guide will walk you through every step.
+
+### Step 1: Install Required Tools
+Open the **Terminal** app on your Mac (press <kbd>Cmd</kbd> + <kbd>Space</kbd>, type `Terminal`, and press <kbd>Enter</kbd>).
+
+1. Install **Homebrew** (if you don't already have it):
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+2. Install the necessary development tools and libraries:
+   ```bash
+   brew install git cmake ninja sdl3 glslang molten-vk vulkan-headers
+   ```
+
+---
+
+### Step 2: Obtain the Repository
+Navigate to the directory where you want to keep the project (for example, on an external drive or your home folder) and clone the repository:
+
+```bash
+cd "<PATH_TO_WHERE_YOU_WANT_THE_PROJECT>"
+git clone https://github.com/aminerochdi1/SCDA-XBERecomp-MacOSPort
+cd SCDA-XBERecomp-MacOSPort
 ```
-git clone https://github.com/TGP482/SCDA-XBERecomp.git
+> **Placeholder:** Replace `<PATH_TO_WHERE_YOU_WANT_THE_PROJECT>` with your actual folder path (e.g. `/Volumes/ORICO` or `~/Projects`).
+
+---
+
+### Step 3: Prepare the Game Disc Image
+You need a legal copy of the original **Xbox** version of *Tom Clancy's Splinter Cell: Double Agent* in **ISO** or **XISO** format.
+- **Recommended version:** Original Xbox (USA or Europe multilingual release, Redump or clean XISO).
+- Verified SHA-1 hash for `default.xbe`: `91290baf93c2f6ae735a3106c48734665c826d84`.
+- Note: PS2, GameCube, PC, or Xbox 360 ISOs are **not** compatible. It must be the original Xbox release.
+
+Copy your game `.iso` file into the `assets` folder inside the project:
+```bash
+cp "<PATH_TO_YOUR_GAME_ISO>" "<PATH_TO_SCDA_XBERECOMP>/assets/"
 ```
+> **Placeholders:**
+> - `<PATH_TO_YOUR_GAME_ISO>`: Path to your game file (e.g. `~/Downloads/SplinterCellDoubleAgent.iso`).
+> - `<PATH_TO_SCDA_XBERECOMP>`: Path to this repository folder.
 
-### 2. Add the Required Game Files
-Place your extracted game data files in the `assets` folder. `default.xbe` and `sc4_adv.xbe` must be there, with the `Default`, `Media` and `adv` folders beside them.
+---
 
-> [!NOTE]
-> Building does not support the ISO format, so the files must be extracted. ISOs only work for playing.
+### Step 4: Extract Game Assets
+The static recompiler requires the game executables and data files to generate C++ code. We first build and run the included `extract_xbe` tool:
 
-### 3. Install Dependencies
-Install [Visual Studio 2022](https://visualstudio.microsoft.com/downloads/) and select the following **Workloads** and **Individual components**:
-- Desktop development with C++
-- C++ Clang tools for Windows
-- C++ CMake tools for Windows
+1. Create a temporary build directory for the tools:
+   ```bash
+   cd "<PATH_TO_SCDA_XBERECOMP>"
+   cmake -B build-tools -GNinja -DCMAKE_BUILD_TYPE=Release
+   ninja -C build-tools extract_xbe xbe_recomp
+   ```
+
+2. Extract the assets from your ISO:
+   ```bash
+   ./build-tools/extract_xbe "assets/<YOUR_ISO_FILENAME>.iso" assets
+   ```
+   > **Placeholder:** Replace `<YOUR_ISO_FILENAME>.iso` with the exact filename of your ISO in the `assets/` folder.
+
+   After this completes, the `assets` directory will contain:
+   - `default.xbe` (Single-player executable)
+   - `sc4_adv.xbe` (Versus/Multiplayer executable)
+   - `Default/` folder
+   - `adv/` folder
+
+---
+
+### Step 5: Compile the Game
+Now, compile the recompiled game executables for macOS Apple Silicon:
+
+```bash
+cd "<PATH_TO_SCDA_XBERECOMP>"
+cmake -B build-macos -GNinja -DCMAKE_BUILD_TYPE=Release
+ninja -C build-macos SCDA SCDA_Versus
+```
 
 > [!TIP]
-> `build.bat` offers to install the Clang and CMake components for you if they're missing.
+> The first compilation translates the entire Xbox game into native code and compiles tens of thousands of functions. This may take 5 to 15 minutes depending on your Apple Silicon chip.
 
-### 4. Build the Project
-- Run `build.bat`. The first build recompiles the entire game and can take 30 to 90 minutes on weaker systems.
-- When it finishes, run `out\build\release\SCDA.exe`.
+When the build finishes, you will find two native executables inside `build-macos/`:
+- `SCDA` (Single-Player campaign)
+- `SCDA_Versus` (Multiplayer)
+
+---
+
+### Step 6: Configure Options
+Settings are stored in `scda.toml` located in your build folder. You can edit this file to customize your experience:
+
+```toml
+# Display & Performance
+display_mode = "windowed"     # "windowed", "borderless", or "fullscreen"
+fps_cap = 60                  # Frame rate cap (30, 60, or 120)
+fps_counter = true            # Set to true to show the FPS counter on screen
+vsync = true                  # Reduce screen tearing
+
+# Audio & Input
+player1 = "keyboard+controller1"
+skip_intros = false           # Set to true to bypass intro logos
+```
+
+---
+
+### Step 7: Launch and Play
+From the `build-macos` directory, launch the game executable:
+
+```bash
+cd "<PATH_TO_SCDA_XBERECOMP>/build-macos"
+./SCDA
+```
+
+To run multiplayer:
+```bash
+./SCDA_Versus
+```
+
+---
+
+## Controls & Keyboard Layout
+
+The port provides full PC-style Keyboard & Mouse controls alongside native Gamepad support.
+
+![Keyboard Layout](assets/input.jpeg)
+
+| Category | Action | Key / Input |
+| :--- | :--- | :--- |
+| **Movement** | Move (Forward / Back / Strafe) | <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> |
+| | Camera / Look | <kbd>Mouse Move</kbd> |
+| | Walking Speed (Speed up / Slow down) | <kbd>Mouse Wheel Up</kbd> / <kbd>Down</kbd> |
+| | Crouch / Stand Up | <kbd>C</kbd> |
+| | Jump / Split Jump | <kbd>Shift</kbd> |
+| | Back to Wall / Switch Hand | <kbd>Q</kbd> |
+| **Weapons & Actions** | Primary Fire | <kbd>LMB (Left Click)</kbd> |
+| | Alternate Fire (Sticky Shocker / Gadgets) | <kbd>RMB (Right Click)</kbd> |
+| | Interact / Action | <kbd>Space</kbd> / <kbd>Enter</kbd> |
+| | Equip / Holster Weapon | <kbd>E</kbd> or <kbd>MMB (Middle Click)</kbd> |
+| | Quick Inventory (Hold to select weapons/gadgets) | <kbd>Ctrl</kbd> + <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> |
+| | Reload | <kbd>R</kbd> |
+| | Whistle | <kbd>V</kbd> |
+| | Co-op Action | <kbd>F</kbd> |
+| **Vision & Tools** | EEV Vision / Sniper Zoom | <kbd>1</kbd> |
+| | Night Vision | <kbd>2</kbd> |
+| | Thermal Vision | <kbd>3</kbd> |
+| | EMF Vision | <kbd>4</kbd> |
+| | Sticky Camera | <kbd>5</kbd> |
+| | OPSAT (PDA / Objectives) | <kbd>F1</kbd> |
+| **System** | In-Game Settings Overlay (Rebind live) | <kbd>F10</kbd> |
+| | Pause | <kbd>Esc</kbd> |
+| | Quick Save / Quick Load | <kbd>F5</kbd> / <kbd>F8</kbd> |
+| | Developer Console | <kbd>~</kbd> |
+
+---
+
+## Troubleshooting & FAQ
+
+#### Q: The game opens, plays sound, but the window is black.
+This was a known AppKit threading issue with the presentation pipeline that has now been **fully resolved**. If you encounter this, ensure your repository has the latest code and that you recompiled using `ninja -C build-macos SCDA`. Also ensure the game window has active focus.
+
+#### Q: Can I use a PlayStation 2 or PC ISO?
+No. This recompiler specifically translates original Microsoft Xbox x86 machine code (`.xbe`). Only original Xbox game rips are supported.
+
+#### Q: How do I open the in-game settings overlay?
+Press <kbd>F10</kbd> on your keyboard while the game is running to toggle the settings menu.
+
+#### Q: Where are save games stored?
+Save games are stored in standard Xbox format inside `build-macos/hdd/UDATA/5553005e/`.
+
+---
+
+## Credits & Acknowledgements
+- **[TGP482](https://github.com/TGP482):** Creator of [SCDA-XBERecomp](https://github.com/TGP482/SCDA-XBERecomp) and [XboxXBE-Recomp](https://github.com/TGP482/XboxXBE-Recomp), without whom this project would not exist.
+- **Joshhhuaaa:** Copyright holder of the upstream SCDA-XBERecomp codebase alongside TGP482.
+- **ROCHDI MOHAMMED AMINE:** macOS Apple Silicon (ARM64) porting, Darwin platform translation, and maintenance.
+- **[Khronos Group](https://www.khronos.org/) & [MoltenVK](https://github.com/KhronosGroup/MoltenVK):** Providing Vulkan support on Metal.
+- **[libsdl-org/SDL](https://github.com/libsdl-org/SDL):** SDL3 for cross-platform audio, windowing, and input.
+- **Ubisoft:** Creators of the *Splinter Cell* franchise.
+
+---
+
+## License
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for full details.
+
+```text
+MIT License
+
+Copyright (c) 2026 TGP482, Joshhhuaaa
+Copyright (c) 2026, ROCHDI MOHAMMED AMINE (macOS ARM64 port)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
