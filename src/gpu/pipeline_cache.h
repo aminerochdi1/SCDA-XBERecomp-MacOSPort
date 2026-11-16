@@ -1,7 +1,6 @@
 #pragma once
 #include <cstdint>
 #include <functional>
-#include <vector>
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -24,12 +23,7 @@ void StorePipeline(uint64_t name, ID3D12PipelineState* pso);
 // each frame: the library is written a few seconds after the last new pipeline
 void SaveWhenIdle();
 
-// the pipelines this executable drew before, as the backend described them, so a new start builds them before they
-// are drawn; Take hands over those read at Open, once
-std::vector<std::vector<uint8_t>> TakePipelineKeys();
-void AddPipelineKey(const void* key, size_t size);
-
-// runs job on a build thread; ahead: before the jobs already waiting
-void Post(std::function<void()> job, bool ahead = false);
+// runs job on a build thread
+void Post(std::function<void()> job);
 
 }  // namespace gpu::cache

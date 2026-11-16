@@ -8,7 +8,6 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 
 #include "core/input.h"
@@ -223,30 +222,13 @@ uint32_t Ansi(uint32_t at, std::string_view text) {
     return at;
 }
 
-// captions moved left to start where their icon did: their own left and the one given, put back for the pad
-struct Moved {
-    int16_t left;
-    int16_t moved;
-};
-std::unordered_map<uint32_t, Moved> g_moved;  // by text widget (game thread)
-
-// false past the last slot. On the keyboard the caption leads with the key and starts where the icon did; on the pad
-// a caption moved for the keyboard goes back
-bool Slot(X86Context& ctx, uint32_t box, uint32_t text_name, uint32_t image_name, bool menu, uint32_t page_id,
-          bool keyboard) {
+// false past the last slot
+bool Slot(X86Context& ctx, uint32_t box, uint32_t text_name, uint32_t image_name, bool menu, uint32_t page_id) {
     uint32_t ti = CallGuest(ctx, kFind, {box, text_name});
     uint32_t ii = CallGuest(ctx, kFind, {box, image_name});
     if (!ii) return false;
     uint32_t text = ti ? R32(ti + kInstanceWidget) : 0;
     uint32_t image = R32(ii + kInstanceWidget);
-    if (!keyboard) {
-        auto it = text ? g_moved.find(text) : g_moved.end();
-        if (it != g_moved.end()) {
-            if (int16_t(R16(text + kRect)) == it->second.moved) W16(text + kRect, uint16_t(it->second.left));
-            g_moved.erase(it);
-        }
-        return true;
-    }
     uint32_t material = image ? R32(image + kImageMaterial) : 0;
     if (!text || !material) return true;
     std::string key = Label(R32(material + kMaterialId), menu, page_id);
@@ -264,18 +246,12 @@ bool Slot(X86Context& ctx, uint32_t box, uint32_t text_name, uint32_t image_name
     W32(image + kImageMaterial, 0);
     ctx.ecx = text + kTextString;
     CallGuest(ctx, kSetText, {g_block + kBlockText});
-    int16_t left = int16_t(R16(text + kRect));
-    int16_t icon = int16_t(R16(image + kRect));
-    if (icon < left) {
-        if (!g_moved.contains(text)) g_moved[text] = {left, icon};
-        W16(text + kRect, uint16_t(icon));
-    }
     return true;
 }
 
 constexpr int kMaxSlots = 16;
 
-void Relabel(X86Context& ctx, uint32_t page, uint32_t type, bool keyboard) {
+void Relabel(X86Context& ctx, uint32_t page, uint32_t type) {
     if (type > 2 || !Block()) return;
     uint32_t instance = CallGuest(ctx, kFind, {page, kPanels[type]});
     uint32_t panel = instance ? R32(instance + kInstanceWidget) : 0;
@@ -288,14 +264,14 @@ void Relabel(X86Context& ctx, uint32_t page, uint32_t type, bool keyboard) {
             uint32_t button = CallGuest(ctx, kFind, {box, name});
             uint32_t element = button ? R32(button + kInstanceWidget) : 0;
             uint32_t inner = element ? R32(element + kChildren) : 0;
-            if (inner) Slot(ctx, inner, kBarText, kBarImage, menu, page_id, keyboard);
+            if (inner) Slot(ctx, inner, kBarText, kBarImage, menu, page_id);
         }
         return;
     }
     for (int i = 0; i < kMaxSlots; i++) {
         uint32_t text = Ansi(g_block + kBlockTextName, std::to_string(i) + "_Text");
         uint32_t image = Ansi(g_block + kBlockImageName, std::to_string(i) + "_Image");
-        if (!Slot(ctx, box, text, image, menu, page_id, keyboard)) break;
+        if (!Slot(ctx, box, text, image, menu, page_id)) break;
     }
 }
 
@@ -417,9 +393,6 @@ struct Held {
     uint32_t material = 0;
     std::u16string text;
     std::u16string shown;
-    bool moved = false;  // the caption's side next to the icon, moved to the icon's far side
-    int16_t side = 0;
-    int16_t placed = 0;
 };
 Held g_held[std::size(kEventPrompts)];  // game thread
 
@@ -472,16 +445,12 @@ void EventPrompt(X86Context& ctx, uint32_t box, size_t i, bool keyboard) {
     if (image != h.image) h = {image};
     std::u16string now = ReadText(text);
     uint32_t material = R32(image + kImageMaterial);
-    // the caption's side against the icon
-    uint32_t edge = p.before ? kRect : kRectRight;
     if (!keyboard) {
-        // back on the pad: the icon, the game's text and the caption's side return
+        // back on the pad: the icon and the game's text return
         if (!h.material) return;
         if (!material) W32(image + kImageMaterial, h.material);
         if (now == h.shown) WriteText(ctx, text, h.text);
-        if (h.moved && int16_t(R16(text + edge)) == h.placed) W16(text + edge, uint16_t(h.side));
         h.material = 0;
-        h.moved = false;
         return;
     }
     if (!material && (!h.material || now == h.shown)) return;
@@ -497,13 +466,6 @@ void EventPrompt(X86Context& ctx, uint32_t box, size_t i, bool keyboard) {
     h.material = icon;
     W32(image + kImageMaterial, 0);
     WriteText(ctx, text, h.shown);
-    // the caption takes the icon's place too: it ends where the icon did, or starts there
-    if (!h.moved) {
-        h.side = int16_t(R16(text + edge));
-        h.placed = int16_t(R16(image + edge));
-        h.moved = true;
-        W16(text + edge, uint16_t(h.placed));
-    }
 }
 
 }  // namespace
@@ -719,8 +681,8 @@ X86_FUNC(sub_002915C1) {
     if (page && actions && R32(page + kPageId) == kNameEntry && Keyboard(page) && Block())
         W32(ctx.esp + 8, WithoutY(actions));
     __imp__sub_002915C1(ctx, base);
-    if (!page || (!Keyboard(page) && g_moved.empty())) return;
+    if (!page || !Keyboard(page)) return;
     uint32_t eax = ctx.eax;
-    Relabel(ctx, page, type, Keyboard(page));
+    Relabel(ctx, page, type);
     ctx.eax = eax;
 }

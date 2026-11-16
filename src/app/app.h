@@ -5,20 +5,15 @@
 #include <map>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <vector>
-
-#include "core/gyro.h"
 
 struct X86Context;
 
 // the host side: window, settings, options menu
 namespace app {
 
-inline constexpr int kVersion = 3;  // release number, the GitHub release tag is V<number>
-inline constexpr uint32_t kFpsCapRefresh = 1;  // fps_cap: the monitor's refresh rate
-// versus caps top out here, as SCCT PC versus, so a player's net traffic stays bounded; UNLIMITED lifts it
-inline constexpr uint32_t kVersusMaxFps = 240;
+inline constexpr int kVersion = 1;  // release number, the GitHub release tag is V<number>
+inline constexpr uint32_t kFpsCapRefresh = 1;  // fps_cap: just under the monitor's refresh rate
 
 enum class DisplayMode : uint32_t { Fullscreen, Windowed, Borderless };
 
@@ -36,13 +31,11 @@ struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
     uint32_t render_percent = 100;   // of the output height
-    uint32_t fps_cap = kFpsCapRefresh;  // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
+    uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     uint32_t fov = 75;               // horizontal degrees on a 4:3 frame, 75 is the game's
     uint32_t brightness = 50;        // 0 to 100 as SCCT PC's sliders, 50 each leaves the picture alone
     uint32_t contrast = 50;
-    bool fps_counter = false;
-    uint32_t fmv_scale = 0;          // full screen movies on a wider screen: 0 fill it, 1 in a 4:3 frame
-    uint32_t colour_blind = 0;       // 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia
+    bool fps_counter = true;
     bool vsync = true;
     bool hdr_output = true;          // HDR10 on a display with Windows HDR on
     uint32_t aniso = 0;              // 0 as the game asks
@@ -56,33 +49,10 @@ struct Settings {
     bool tone_mapping = false;
     uint32_t ambient_occlusion = 0;  // screen space, from the scene's depth: 0 off, 1 SSAO, 2 GTAO
     bool async_shaders = true;       // a draw whose pipeline needs compiling is skipped until the build threads have it; scda.toml only
-    bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
-    bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
-    uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
-    float mouse_sensitivity = 1.0f;  // horizontal
-    float mouse_vertical_sensitivity = 1.0f;
-    bool invert_mouse = false;  // the Y axis
-    bool invert_mouse_x = false;
-    bool invert_pad_x = false;  // the right stick
-    bool invert_pad_y = false;
-    float pad_dead_zone = 0.0f;  // per stick axis, 0 the game's own
-    // the right stick's look, the aim ones times the others while aiming
-    float pad_horizontal_sensitivity = 1.0f;
-    float pad_vertical_sensitivity = 1.0f;
-    float pad_aim_horizontal_sensitivity = 1.0f;
-    float pad_aim_vertical_sensitivity = 1.0f;
-    uint32_t vibration_strength = 100;  // percent of the game's rumble, 0 to 200
-    gyro::Settings gyro;               // story only: the controller's gyro turns the view, beside the right stick
-    // versus only, in place of mouse_sensitivity: third person, weapon raised, sniper scope
-    float free_look_sensitivity = 1.0f;
-    float weapon_sensitivity = 1.0f;
-    float sniper_sensitivity = 1.0f;
-    // aiming a weapon or through a scope, in place of the sensitivity above
-    float aim_horizontal_sensitivity = 1.0f;
-    float aim_vertical_sensitivity = 1.0f;
+    float mouse_sensitivity = 1.0f;
+    bool invert_mouse = false;
     bool skip_intros = false;        // logos video and rating screen at boot
-    bool pause_on_focus_loss = true;  // the game and its sound stop while the window is in the background
-    std::string language = "auto";   // "auto" (the Windows display language) or one of kLanguages
+    std::string language = "int";    // one of kLanguages
     uint32_t audio_output = 0;       // audio::kOutputAuto, kOutputStereo, kOutputSurround or kOutputMono
     uint32_t coop_tick_rate = 60;          // co-op step frequency, Hz; 0 is the game's 22
     uint32_t coop_input_delay_floor = 20;  // ms, the game's 50
@@ -100,9 +70,7 @@ void Save();
 void LogSettings();  // every setting into the log, as scda.toml has them
 void LogSystem();    // the machine and the settings into the log, at a run's start
 void ApplyDisplay();  // any thread
-// one of kLanguages for a language setting: "auto" is the Windows display language, English when the game lacks it
-std::string ResolveLanguage(const std::string& setting);
-// the language setting as this run started, resolved: the console's language setting, which the game reads at boot
+// the language setting as this run started: the console's language setting, which the game reads at boot
 const std::string& BootLanguage();
 struct Mode {
     uint32_t width, height;
@@ -138,12 +106,9 @@ struct GameFiles {
     std::vector<uint8_t> xbe;
 };
 bool FindGame(GameFiles& game);
-std::string Sha1(const std::vector<uint8_t>& data);  // lower case hex
-// the recompiled code, <exe>.dll, built from the game in assets when missing or out of date (game_code.cpp) and
-// loaded; false after telling the player why the game cannot start, or when they chose not to start it yet
-bool PrepareGameCode(const GameFiles& game);
 int Instance();  // --instance N on the command line, 0 without: a second copy on this PC for system link tests
-void* Window();  // HWND
+void* Window();  // HWND or SDL_Window*
+void RequestClose();
 // boot splash: SplinterCell4Logo.bmp or .png beside the exe, up before the game window
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
 void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window
@@ -162,7 +127,6 @@ bool MenuOpen();
 uint32_t SettingsRevision();  // counts saved setting changes, from F10 or the in-game pages
 bool Capturing();  // a key binding waits for a key
 void ToggleMenu();
-void ToggleTextureReplacement();  // the bind's: flips and saves the setting
 void DrawUi();
 
 // the window's display has Windows HDR on, from the renderer
@@ -171,10 +135,8 @@ inline std::atomic<bool> g_hdr_display{false};
 inline std::atomic<float> g_fps{0};
 // the frame rate in the game's font, from the image's Magma frame hook
 void DrawFps(X86Context& ctx);
-// "XBE Recomp V<kVersion>" bottom right, from the game mode page draw
+// "XBE Recomp V1" bottom right, from the game mode page draw
 void DrawWatermark(X86Context& ctx);
-// a line of text in the game's font at a page position (left, top, line height), colour 0xAARRGGBB
-void DrawPageText(X86Context& ctx, std::u16string_view text, int x, int top, int height, uint32_t colour);
 // the hide HUD key: the HUD layer's Magma pages are not drawn in a level
 inline std::atomic<bool> g_hide_hud{false};
 
@@ -208,7 +170,5 @@ void DrawConsole();
 
 // sleeps out the rest of the frame for the fps cap
 void Pace();
-// pause on focus loss (focus_pause.cpp): any thread that swaps, before the present
-void WaitWhileUnfocused();
 
 }  // namespace app

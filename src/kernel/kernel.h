@@ -1,7 +1,6 @@
 #pragma once
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -52,6 +51,7 @@ enum : uint32_t {
     kNotSupported = 0xC00000BB,
     kDeviceNotConnected = 0xC000009D,
     kCannotDelete = 0xC0000121,
+    kTooManyOpenedFiles = 0xC000011F,
 };
 
 extern uint8_t* g_base;
@@ -139,9 +139,6 @@ int32_t ReleaseSemaphore(Object& o, int32_t count, uint32_t& status);
 int32_t ReleaseMutant(Object& o, uint32_t& status);
 int64_t Now100ns();                           // system time, 100 ns since 1601
 int64_t ToDeadline(int64_t due_100ns);        // relative or absolute to a steady clock deadline in ns
-// the guest's clocks (time stamp counter, performance counter, tick count): steady time frozen while held, any thread
-std::chrono::steady_clock::time_point GuestNow();
-void HoldGuestTime(bool held);  // any thread that swaps, through a focus pause
 void QueueDpc(uint32_t dpc, uint32_t arg1, uint32_t arg2);
 void SetTimer(ObjectRef timer, int64_t due, int32_t period_ms, uint32_t dpc);
 bool CancelTimer(Object& timer);

@@ -1,4 +1,5 @@
 // Tom Clancy's Splinter Cell: Double Agent (Xbox), statically recompiled
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -8,16 +9,26 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <timeapi.h>
+#include <backends/imgui_impl_win32.h>
+#else
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_metal.h>
+#include <backends/imgui_impl_sdl3.h>
+#include <sys/resource.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#import <Cocoa/Cocoa.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cwchar>
-#include <string_view>
 #include <thread>
 
 #include <imgui.h>
-#include <backends/imgui_impl_win32.h>
 
 #include "app/app.h"
 #include "core/input.h"
@@ -26,12 +37,15 @@
 #include "image_symbols.h"
 #include "kernel/kernel.h"
 
+#ifdef _WIN32
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+#endif
 
 namespace app {
 
 namespace {
 
+#ifdef _WIN32
 HWND g_hwnd = nullptr;
 constexpr UINT kApplyDisplay = WM_APP + 1, kOpenWindow = WM_APP + 2;
 bool g_mode_changed = false;
@@ -133,12 +147,11 @@ void ApplyNow() {
     g_display_applied++;
 }
 
-// a key went down: the settings panel, hide HUD and texture replacement binds
+// a key went down: the settings panel and hide HUD binds
 bool HostKey(WPARAM wp, LPARAM lp) {
     if (lp & (1 << 30) || ConsoleOpen()) return false;  // bit 30: a repeat of a held key
     if (input::HostKey(input::KeyEvent::SettingsPanel, int(wp))) ToggleMenu();
     else if (!MenuOpen() && input::HostKey(input::KeyEvent::HideHud, int(wp))) g_hide_hud = !g_hide_hud;
-    else if (!MenuOpen() && input::HostKey(input::KeyEvent::ToggleTextures, int(wp))) ToggleTextureReplacement();
     else return false;
     return true;
 }
@@ -223,15 +236,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
+#endif
 
 }  // namespace
 
 std::filesystem::path ExeDir() {
+#ifdef _WIN32
     wchar_t p[MAX_PATH];
     GetModuleFileNameW(nullptr, p, MAX_PATH);
     return std::filesystem::path(p).parent_path();
+#elif defined(__APPLE__)
+    char path[1024] = {};
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) == 0) {
+        return std::filesystem::canonical(path).parent_path();
+    }
+    return std::filesystem::current_path();
+#else
+    char path[1024] = {};
+    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len > 0) return std::filesystem::path(std::string(path, len)).parent_path();
+    return std::filesystem::current_path();
+#endif
 }
 
+#ifdef _WIN32
 int Instance() {
     static const int n = [] {
         const wchar_t* p = std::wcsstr(GetCommandLineW(), L"--instance");
@@ -249,6 +278,7 @@ std::recursive_mutex& UiLock() {
 
 void ApplyDisplay() { PostMessageW(g_hwnd, kApplyDisplay, 0, 0); }
 void OpenGameWindow(bool apply) { SendMessageW(g_hwnd, kOpenWindow, apply, 0); }
+void RequestClose() { PostMessageW(g_hwnd, WM_CLOSE, 0, 0); }
 
 // the game window's monitor's refresh rate, read again each second (a mode change, a move to another monitor); 0
 // when unreadable
@@ -273,8 +303,10 @@ void Pace() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
     uint32_t cap = Get().fps_cap;
-    if (cap == kFpsCapRefresh) cap = RefreshRate();
-    if (std::string_view(IMAGE_XBE) == "sc4_adv.xbe" && cap > kVersusMaxFps) cap = kVersusMaxFps;
+    // a few under the refresh rate, so a variable refresh display stays in its range and vsync never waits a whole
+    // refresh
+    constexpr uint32_t kRefreshMargin = 3;
+    if (cap == kFpsCapRefresh) cap = RefreshRate() > kRefreshMargin ? RefreshRate() - kRefreshMargin : 0;
     auto now = clock::now();
     if (!cap) {
         next = now;
@@ -309,7 +341,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     app::GameFiles game;
     if (!app::FindGame(game)) return 1;
-    if (!app::PrepareGameCode(game)) return 1;
 
     bool splash = app::OpenSplash(), handover = app::StartHandover();
 
@@ -343,7 +374,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     std::wstring hdd = app::Instance() > 1 ? L"hdd" + std::to_wstring(app::Instance()) : L"hdd";
     if (app::Instance()) SetWindowTextW(app::g_hwnd, (L"Tom Clancy's Splinter Cell: Double Agent [" + std::to_wstring(app::Instance()) + L"]").c_str());
     if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / hdd).string())) {
-        MessageBoxW(app::g_hwnd, L"The game failed to start, see the log in the logs folder.", L"Splinter Cell: Double Agent",
+        MessageBoxW(app::g_hwnd, L"The game failed to start, see the log in the logs folder.", L"Splinter Cell Double Agent",
                     MB_ICONERROR);
         return 1;
     }
@@ -358,3 +389,212 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     logx::Flush();
     kernel::Shutdown(0);
 }
+#else
+void* g_window = nullptr;
+
+int Instance() { return 0; }
+void* Window() { return g_window; }
+
+std::recursive_mutex& UiLock() {
+    static std::recursive_mutex m;
+    return m;
+}
+
+constexpr Uint32 kEventApplyDisplay = SDL_EVENT_USER + 1;
+constexpr Uint32 kEventOpenWindow = SDL_EVENT_USER + 2;
+
+static void DoApplyDisplay() {
+    if (!g_window) return;
+    const Settings& s = Get();
+    if (s.display_mode == DisplayMode::Fullscreen) {
+        SDL_SetWindowFullscreen(static_cast<SDL_Window*>(g_window), true);
+    } else {
+        SDL_SetWindowFullscreen(static_cast<SDL_Window*>(g_window), false);
+        Mode out = Output();
+        SDL_SetWindowSize(static_cast<SDL_Window*>(g_window), out.width, out.height);
+    }
+    g_display_applied++;
+}
+
+static void DoOpenWindow(bool apply) {
+    if (g_window) {
+        if (apply) DoApplyDisplay();
+        SDL_ShowWindow(static_cast<SDL_Window*>(g_window));
+#ifdef __APPLE__
+        @autoreleasepool {
+            [NSApp activateIgnoringOtherApps:YES];
+            SDL_PropertiesID props = SDL_GetWindowProperties(static_cast<SDL_Window*>(g_window));
+            NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+            if (nswin) {
+                [nswin makeKeyAndOrderFront:nil];
+            }
+        }
+#endif
+    }
+}
+
+void ApplyDisplay() {
+    SDL_Event e{};
+    e.type = kEventApplyDisplay;
+    SDL_PushEvent(&e);
+}
+
+void OpenGameWindow(bool apply) {
+    SDL_Event e{};
+    e.type = kEventOpenWindow;
+    e.user.code = apply ? 1 : 0;
+    SDL_PushEvent(&e);
+}
+
+void RequestClose() {
+    SDL_Event e;
+    e.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&e);
+}
+
+uint32_t RefreshRate() {
+    if (g_window) {
+        SDL_DisplayID disp = SDL_GetDisplayForWindow(static_cast<SDL_Window*>(g_window));
+        if (disp) {
+            const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(disp);
+            if (dm && dm->refresh_rate > 1) return uint32_t(dm->refresh_rate);
+        }
+    }
+    return 60;
+}
+
+void Pace() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point next = clock::now();
+    uint32_t cap = Get().fps_cap;
+    constexpr uint32_t kRefreshMargin = 3;
+    if (cap == kFpsCapRefresh) cap = RefreshRate() > kRefreshMargin ? RefreshRate() - kRefreshMargin : 0;
+    auto now = clock::now();
+    if (!cap) {
+        next = now;
+        return;
+    }
+    auto period = std::chrono::nanoseconds(1000000000ull / cap);
+    next += period;
+    if (next < now - period) next = now;
+    while (clock::now() + std::chrono::milliseconds(2) < next) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    while (clock::now() < next) std::this_thread::yield();
+}
+
+}  // namespace app
+
+int main(int argc, char** argv) {
+#if !defined(_WIN32)
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+        rl.rlim_cur = std::min<rlim_t>(rl.rlim_max, 10240);
+        setrlimit(RLIMIT_NOFILE, &rl);
+    }
+#endif
+    std::signal(SIGABRT, [](int) { logx::Flush(); });
+    std::signal(SIGSEGV, [](int) {
+        if (kernel::Thread* t = kernel::Current(); t && t->ctx) {
+            LOGE("SIGSEGV on guest thread %X", t->id);
+            kernel::LogGuestStack(*t->ctx, 256);
+        }
+        logx::Flush();
+        std::exit(1);
+    });
+
+    bool relaunched = false;
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--relaunched") == 0) relaunched = true;
+    }
+    std::string log = app::Instance() > 1 ? "scda-" + std::to_string(app::Instance()) : "scda";
+    logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
+    app::Load();
+    app::LogSystem();
+
+    app::GameFiles game;
+    if (!app::FindGame(game)) return 1;
+
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
+        LOGE("SDL_Init failed: %s", SDL_GetError());
+        return 1;
+    }
+
+    app::g_window = SDL_CreateWindow("Tom Clancy's Splinter Cell: Double Agent", 1280, 720,
+                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!app::g_window) {
+        LOGE("SDL_CreateWindow failed: %s", SDL_GetError());
+        return 1;
+    }
+
+#ifdef __APPLE__
+    @autoreleasepool {
+        [NSApp activateIgnoringOtherApps:YES];
+        SDL_PropertiesID props = SDL_GetWindowProperties(static_cast<SDL_Window*>(app::g_window));
+        NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+        if (nswin) {
+            [nswin makeKeyAndOrderFront:nil];
+            if (nswin.contentView) {
+                nswin.contentView.wantsLayer = YES;
+            }
+        }
+    }
+#endif
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    ImGui_ImplSDL3_InitForVulkan(static_cast<SDL_Window*>(app::g_window));
+    io.PlatformSetImeDataFn = nullptr;
+
+    input::Init(app::g_window);
+    input::LoadBindings();
+
+    std::string hdd = app::Instance() > 1 ? "hdd" + std::to_string(app::Instance()) : "hdd";
+    if (!kernel::Boot(std::move(game.xbe), IMAGE_XBE, game.dir.string(), (app::ExeDir() / hdd).string())) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Splinter Cell Double Agent",
+                                 "The game failed to start, see the log in the logs folder.",
+                                 static_cast<SDL_Window*>(app::g_window));
+        return 1;
+    }
+
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            {
+                std::lock_guard lock(app::UiLock());
+                if (ImGui::GetCurrentContext()) {
+                    ImGui_ImplSDL3_ProcessEvent(&event);
+                }
+            }
+            input::ProcessEvent(event);
+            if (event.type == SDL_EVENT_QUIT) {
+                running = false;
+            } else if (event.type == app::kEventApplyDisplay) {
+                app::DoApplyDisplay();
+            } else if (event.type == app::kEventOpenWindow) {
+                app::DoOpenWindow(event.user.code != 0);
+            }
+        }
+
+        bool want_relative = input::Active() && !input::InMenu() && !input::Pointer() && !app::MenuOpen() && !app::ConsoleOpen();
+        static bool cur_relative = false;
+        if (want_relative != cur_relative) {
+            SDL_SetWindowRelativeMouseMode(static_cast<SDL_Window*>(app::g_window), want_relative);
+            cur_relative = want_relative;
+        }
+
+        SDL_Delay(2);
+    }
+
+    gpu::SavePipelineCache();
+    logx::Flush();
+    kernel::Shutdown(0);
+    SDL_DestroyWindow(static_cast<SDL_Window*>(app::g_window));
+    SDL_Quit();
+    return 0;
+}
+#endif

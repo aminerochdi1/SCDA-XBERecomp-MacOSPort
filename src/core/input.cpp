@@ -5,7 +5,6 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
-#include <cmath>
 #include <cstdlib>
 #include <cwctype>
 #include <iterator>
@@ -15,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -23,6 +23,9 @@
 #endif
 #include <windows.h>
 #include <xinput.h>
+#else
+#include "core/win32_compat.h"
+#endif
 
 #include <SDL3/SDL.h>
 
@@ -171,12 +174,10 @@ constexpr float kVersusDeadZone = 0.2f;
 constexpr float kVersusFloor = 18001.0f / kStickMax;
 std::atomic<int> g_speed{4};
 std::atomic<bool> g_targeting{false};
-std::atomic<bool> g_aiming{false};
 
 std::atomic<uint32_t> g_events{0};  // key events pressed in play and not yet taken
 
 std::atomic<bool> g_net{false};
-std::atomic<bool> g_video{false};  // SetTrainingVideo
 std::atomic<bool> g_interact_reloads{false};
 std::atomic<bool> g_carrying{false};
 std::atomic<bool> g_hanging{false};
@@ -187,6 +188,7 @@ std::atomic<bool> g_ladder_step{false};  // the ladder's transition (a step) is 
 std::atomic<bool> g_pipe{false};
 constexpr float kClimbDown = 0.759f;  // axis 0.66
 bool g_ladder_slide = false;
+bool g_ladder_was_step = false;
 
 // what an action presses: 0-7 analog A B X Y black white LT RT, 8-15 the buttons bits, 16-19 the move keys;
 // or, with an event, no pad button: the game side acts on it once per press (KeyEvent)
@@ -230,7 +232,6 @@ constexpr Target kStoryActions[] = {
     {{"quick_load", "QUICK LOAD", "F8"}, -1, true, KeyEvent::QuickLoad},
     {{"console", "CONSOLE", "Backtick"}, kHostKey},
     {{"hide_hud", "TOGGLE HUD", ""}, kHostKey, false, KeyEvent::HideHud},
-    {{"toggle_textures", "TOGGLE TEXTURE REPLACEMENT", ""}, kHostKey, false, KeyEvent::ToggleTextures},
     {{"settings_panel", "SETTINGS PANEL", "F10"}, kHostKey, false, KeyEvent::SettingsPanel},
 };
 // Versus (sc4_adv.xbe) binds the pad differently. Its own ids keep rebinds in one game.
@@ -244,9 +245,6 @@ constexpr Target kVersusActions[] = {
     {{"versus_interact", "INTERACT", "Shift"}, 0},
     {{"versus_jump", "JUMP", "Space"}, 3},
     {{"crouch", "CROUCH", "C"}, 1},
-    // a press is a wheel notch, run or walk, or the scope's zoom
-    {{"versus_zoom_in", "ZOOM IN / ACCELERATE", "Wheel Up"}, -1, false, KeyEvent::ZoomIn},
-    {{"versus_zoom_out", "ZOOM OUT / DECELERATE", "Wheel Down"}, -1, false, KeyEvent::ZoomOut},
     {{"versus_scope", "USE / EQUIP", "E"}, 2},
     // the pad's Y jumps or reloads as the state allows; the key reloads alone (versus/mouse.cpp)
     {{"reload", "RELOAD", "R"}, -1, true, KeyEvent::Reload},
@@ -258,7 +256,6 @@ constexpr Target kVersusActions[] = {
     {{"pause", "PAUSE", "Escape"}, 12},
     // no console: versus has no commands
     {{"push_to_talk", "PUSH TO TALK", "T"}, kHostKey, false, KeyEvent::PushToTalk},
-    {{"toggle_textures", "TOGGLE TEXTURE REPLACEMENT", ""}, kHostKey, false, KeyEvent::ToggleTextures},
     {{"settings_panel", "SETTINGS PANEL", "F10"}, kHostKey, false, KeyEvent::SettingsPanel},
 };
 constexpr bool kVersus = std::string_view(IMAGE_XBE) == "sc4_adv.xbe";
@@ -388,22 +385,6 @@ constexpr Name kNames[] = {
     {VK_OEM_COMMA, "Comma"}, {VK_OEM_PERIOD, "Period"}, {VK_OEM_2, "Slash"},
 };
 
-// US layout scan codes of the keys that move with the layout: a bind names the US key at that position
-struct Position {
-    int vk;
-    UINT scan;
-};
-constexpr Position kPositions[] = {
-    {'1', 0x02}, {'2', 0x03}, {'3', 0x04}, {'4', 0x05}, {'5', 0x06}, {'6', 0x07}, {'7', 0x08}, {'8', 0x09},
-    {'9', 0x0A}, {'0', 0x0B}, {VK_OEM_MINUS, 0x0C}, {VK_OEM_PLUS, 0x0D},
-    {'Q', 0x10}, {'W', 0x11}, {'E', 0x12}, {'R', 0x13}, {'T', 0x14}, {'Y', 0x15}, {'U', 0x16}, {'I', 0x17},
-    {'O', 0x18}, {'P', 0x19}, {VK_OEM_4, 0x1A}, {VK_OEM_6, 0x1B},
-    {'A', 0x1E}, {'S', 0x1F}, {'D', 0x20}, {'F', 0x21}, {'G', 0x22}, {'H', 0x23}, {'J', 0x24}, {'K', 0x25},
-    {'L', 0x26}, {VK_OEM_1, 0x27}, {VK_OEM_7, 0x28}, {VK_OEM_3, 0x29}, {VK_OEM_5, 0x2B},
-    {'Z', 0x2C}, {'X', 0x2D}, {'C', 0x2E}, {'V', 0x2F}, {'B', 0x30}, {'N', 0x31}, {'M', 0x32},
-    {VK_OEM_COMMA, 0x33}, {VK_OEM_PERIOD, 0x34}, {VK_OEM_2, 0x35},
-};
-
 // arrows move at full tilt so menus always see a press, Backspace backs out of a menu but deletes in a name
 constexpr int kArrows[] = {VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT};
 
@@ -424,48 +405,6 @@ const char* NameOf(int vk) {
     return nullptr;
 }
 
-UINT ScanOf(int vk) {
-    for (const Position& p : kPositions) {
-        if (p.vk == vk) return p.scan;
-    }
-    return 0;
-}
-
-// the keyboard layout the player types with, switched per window thread
-HKL Layout() { return GetKeyboardLayout(GetWindowThreadProcessId(g_hwnd, nullptr)); }
-
-// the key the current layout has at the bind's position
-int LiveVk(int vk) {
-    UINT scan = ScanOf(vk);
-    if (!scan) return vk;
-    UINT live = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, Layout());
-    return live ? int(live) : vk;
-}
-
-// a key the window was sent, as the position bound to it
-int PositionVk(int live) {
-    if (NameOf(live) && !ScanOf(live)) return live;
-    UINT scan = MapVirtualKeyExW(UINT(live), MAPVK_VK_TO_VSC, Layout());
-    for (const Position& p : kPositions) {
-        if (p.scan == scan) return p.vk;
-    }
-    return live;
-}
-
-// the key as the player's keyboard labels it
-std::string Label(int vk) {
-    int live = LiveVk(vk);
-    if (live == vk) return NameOf(vk);
-    bool alnum = (live >= 'A' && live <= 'Z') || (live >= '0' && live <= '9');
-    if (alnum) return std::string(1, char(live));
-    // the top bit flags a dead key
-    UINT c = MapVirtualKeyExW(UINT(live), MAPVK_VK_TO_CHAR, Layout()) & 0x7FFF;
-    // a comma would split the key list
-    if (c == ',') return NameOf(VK_OEM_COMMA);
-    if (c > ' ' && c < 0x7F) return std::string(1, char(c));
-    return NameOf(vk);
-}
-
 std::vector<int> Parse(const std::string& list) {
     std::vector<int> out;
     size_t start = 0;
@@ -478,21 +417,47 @@ std::vector<int> Parse(const std::string& list) {
     return out;
 }
 
-// the saved names, or the player's labels for the menus
-std::string Join(const std::vector<int>& vks, bool labels = false) {
+std::string Join(const std::vector<int>& vks) {
     std::string s;
     for (int vk : vks) {
         if (!s.empty()) s += ',';
-        s += labels ? Label(vk) : NameOf(vk);
+        s += NameOf(vk);
     }
     return s;
 }
 
+}  // namespace
+
+#ifdef _WIN32
 bool Active() { return g_hwnd && GetForegroundWindow() == g_hwnd && !g_blocked; }
+#else
+bool Active() {
+    if (!g_hwnd || g_blocked.load(std::memory_order_relaxed)) return false;
+    SDL_Window* win = static_cast<SDL_Window*>(g_hwnd);
+    return (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+#endif
+
+namespace {
+
+#ifdef _WIN32
 bool Down(int vk) {
     if (vk == kWheelUp || vk == kWheelDown) return NowMs() - g_wheel_ms[vk == kWheelDown] < kWheelTapMs;
-    return GetAsyncKeyState(LiveVk(vk)) < 0;
+    return GetAsyncKeyState(vk) < 0;
 }
+#else
+std::atomic<bool> g_key_state[256]{};
+std::atomic<int> g_mouse_x{0};
+std::atomic<int> g_mouse_y{0};
+std::atomic<int> g_win_w{1280};
+std::atomic<int> g_win_h{720};
+
+bool Down(int vk) {
+    if (vk == kWheelUp || vk == kWheelDown) return NowMs() - g_wheel_ms[vk == kWheelDown] < kWheelTapMs;
+    if (vk >= 0 && vk < 256) return g_key_state[vk].load(std::memory_order_relaxed);
+    return false;
+}
+#endif
 bool HeldKeys(KeyEvent event) {
     std::vector<int> keys;
     {
@@ -503,9 +468,7 @@ bool HeldKeys(KeyEvent event) {
     }
     return std::any_of(keys.begin(), keys.end(), Down);
 }
-// vk as the window sends it, on the player's layout
 bool Bound(KeyEvent event, int vk) {
-    vk = PositionVk(vk);
     std::lock_guard lock(g_bind_lock);
     for (size_t i = 0; i < kCount; i++) {
         if (kActions[i].event != event) continue;
@@ -568,12 +531,6 @@ bool ActionHeld(size_t i, const std::vector<int>& vks, bool no_mouse, bool menu)
 void ApplyEventKey(size_t i, Pad& p) {
     if (int zoom = ZoomOf(i)) {
         if (!g_down_as[i]) Notch(zoom);
-        g_down_as[i] = 1;
-        return;
-    }
-    KeyEvent e = kActions[i].event;
-    if (g_video && (e == KeyEvent::SidekickCommand || e == KeyEvent::Whistle)) {
-        p.analog[kBlack] = 0xFF;
         g_down_as[i] = 1;
         return;
     }
@@ -727,9 +684,9 @@ void UpdateStick(Pad& p, const int (&move)[4], bool camera, bool menu, bool back
     }
     bool step = g_ladder_step, top = g_speed == int(std::size(kSpeeds)) - 1;
     bool down = y < 0 && !menu && !ax && !ay;
-    // held steps chain without the transition dropping between them, so reaching the top speed during any step counts
     if (!g_ladder || !down) g_ladder_slide = false;
-    else if (step && top) g_ladder_slide = true;
+    else if (step && !g_ladder_was_step && top) g_ladder_slide = true;
+    g_ladder_was_step = step;
     // Not where the full stick is forced: a ledge climb wants aForward past 0.9.
     if (x && y && !full) v = DiagonalSpeed(v);
     float vy = v;
@@ -786,18 +743,22 @@ void Keyboard(Pad& p) {
 
 // the cursor stays where the drag started, so it hovers nothing on the way
 void Pin() {
+#ifdef _WIN32
     POINT pt;
     if (!GetCursorPos(&pt)) return;
     RECT r{pt.x, pt.y, pt.x + 1, pt.y + 1};
     ClipCursor(&r);
+#endif
 }
 
 void Clip() {
+#ifdef _WIN32
     RECT r;
     RECT cur;
     GetClientRect(g_hwnd, &r);
     MapWindowPoints(g_hwnd, nullptr, reinterpret_cast<POINT*>(&r), 2);
     if (!GetClipCursor(&cur) || !EqualRect(&r, &cur)) ClipCursor(&r);
+#endif
 }
 
 // The controllers come through SDL, read into XInput's report. A controller takes the lowest free slot (the settings'
@@ -829,6 +790,7 @@ void RemovePad(SDL_JoystickID id) {
 
 // once a millisecond at most, however many ports and threads read
 void UpdatePads() {
+#ifdef _WIN32
     static uint64_t last = 0;
     uint64_t now = NowMs();
     if (now == last) return;
@@ -839,10 +801,10 @@ void UpdatePads() {
         if (e.type == SDL_EVENT_GAMEPAD_ADDED) AddPad(e.gdevice.which);
         else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) RemovePad(e.gdevice.which);
     }
+#endif
 }
 
 void StartPads() {
-    if (g_sdl) return;  // started already for the game code window
     // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
     // so SDL's own thread takes the device notices.
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
@@ -864,24 +826,6 @@ void StartPads() {
         for (int i = 0; i < count; i++) AddPad(ids[i]);
         SDL_free(ids);
     }
-}
-
-// The game drops a stick axis inside its own dead zone: the axis is moved so that zone starts where the chosen
-// one does, the identity at the game's own
-SHORT MoveDeadZone(SHORT value, float zone) {
-    float game = GameDeadZone();
-    float v = std::min(std::abs(float(value)) / kStickMax, 1.0f);
-    if (v <= zone) return 0;
-    float out = (game + (v - zone) / (1.0f - zone) * (1.0f - game)) * kStickMax;
-    return SHORT(std::lround(value < 0 ? -out : out));
-}
-
-void ApplyDeadZone(XINPUT_GAMEPAD& g, float zone) {
-    if (zone <= 0.0f || zone == GameDeadZone()) return;
-    g.sThumbLX = MoveDeadZone(g.sThumbLX, zone);
-    g.sThumbLY = MoveDeadZone(g.sThumbLY, zone);
-    g.sThumbRX = MoveDeadZone(g.sThumbRX, zone);
-    g.sThumbRY = MoveDeadZone(g.sThumbRY, zone);
 }
 
 // false for an empty slot
@@ -937,12 +881,8 @@ bool ReadPad(int slot, XINPUT_GAMEPAD& g) {
     // not plain negation: -32768 has no positive
     g.sThumbLX = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
     g.sThumbLY = SHORT(-1 - SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-    SHORT rx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
-    SHORT ry = SHORT(-1 - SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
-    const app::Settings& s = app::Get();
-    g.sThumbRX = s.invert_pad_x ? SHORT(-1 - rx) : rx;
-    g.sThumbRY = s.invert_pad_y ? SHORT(-1 - ry) : ry;
-    ApplyDeadZone(g, s.pad_dead_zone);
+    g.sThumbRX = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX);
+    g.sThumbRY = SHORT(-1 - SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
     return true;
 }
 
@@ -974,8 +914,13 @@ void Rebind(Pad& p, int port, int slot, WORD buttons) {
     for (int b = kPadControls; b < kPadButtons; b++) raw[b] = (buttons & kPadMasks[b]) ? 0xFF : 0;
     p.buttons = 0;
     std::fill(std::begin(p.analog), std::end(p.analog), uint8_t(0));
-    bool held = std::any_of(std::begin(raw), std::end(raw),
-                            [](uint8_t v) { return v > XINPUT_GAMEPAD_TRIGGER_THRESHOLD; });
+    bool held = false;
+    for (uint8_t v : raw) {
+        if (v > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) {
+            held = true;
+            break;
+        }
+    }
     if (g_pad_settle[size_t(slot)] && held) return;
     g_pad_settle[size_t(slot)] = false;
     bool play = !g_menu && !g_title;
@@ -1045,6 +990,16 @@ void Notch(int notch) {
 
 }  // namespace
 
+void HandleGamepadAdded(uint32_t id) {
+    std::lock_guard lock(g_pads_mutex);
+    AddPad(id);
+}
+
+void HandleGamepadRemoved(uint32_t id) {
+    std::lock_guard lock(g_pads_mutex);
+    RemovePad(id);
+}
+
 bool MapDrag() { return g_map && Active() && Down(VK_RBUTTON); }
 
 void SetBlocked(bool b) {
@@ -1055,25 +1010,26 @@ void SetBlocked(bool b) {
     if (b) ReleaseCursor();
 }
 
-void StartControllers() { StartPads(); }
-
-uint16_t HeldOnAnyController() {
-    uint16_t held = 0;
-    for (int slot = 0; slot < 4; slot++) {
-        XINPUT_GAMEPAD g;
-        if (ReadPad(slot, g)) held |= g.wButtons;
-    }
-    return held;
-}
-
 void Init(void* hwnd) {
     g_hwnd = static_cast<HWND>(hwnd);
+#ifdef _WIN32
     RAWINPUTDEVICE mouse{1, 2, 0, g_hwnd};  // generic desktop page, mouse usage
     RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+#else
+    if (g_hwnd) {
+        int w = 0, h = 0;
+        SDL_GetWindowSize(static_cast<SDL_Window*>(g_hwnd), &w, &h);
+        if (w > 0 && h > 0) {
+            g_win_w.store(w, std::memory_order_relaxed);
+            g_win_h.store(h, std::memory_order_relaxed);
+        }
+    }
+#endif
     StartPads();
 }
 
 void OnRawInput(void* handle) {
+#ifdef _WIN32
     RAWINPUT ri;
     UINT size = sizeof(ri);
     UINT read = GetRawInputData(static_cast<HRAWINPUT>(handle), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER));
@@ -1093,18 +1049,22 @@ void OnRawInput(void* handle) {
         g_dy += m.lLastY;
     }
     if (!notch) return;
-    // the map, menus and the interaction list keep the wheel whatever it is bound to, as the arrows
+    // the map, menus and the interaction list keep the wheel whatever it is bound to, as the arrows; versus has no
+    // zoom actions, its wheel picks walk or run
     if (g_map) {
         Notch(notch);
     } else if (g_menu || g_list) {
         g_menu_wheel += SHORT(m.usButtonData);
+    } else if (kVersus) {
+        Notch(notch);
     }
-    if (g_map || g_menu || g_list) return;
+    if (g_map || g_menu || g_list || kVersus) return;
     int vk = notch > 0 ? kWheelUp : kWheelDown;
     std::lock_guard lock(g_bind_lock);
     for (size_t i = 0; i < kCount; i++) {
         if (ZoomOf(i) && std::ranges::find(g_binds[i], vk) != g_binds[i].end()) Notch(ZoomOf(i));
     }
+#endif
 }
 
 void OnPress() { g_press_counts = Active() && Pointing(); }
@@ -1116,7 +1076,9 @@ void OnClick() {
 void SkipPromptShown() { g_skip_ms = NowMs(); }
 
 void ReleaseCursor() {
+#ifdef _WIN32
     ClipCursor(nullptr);
+#endif
     g_settle = true;
 }
 
@@ -1125,12 +1087,8 @@ bool TakeMouse(float& dx, float& dy) {
     int y = g_dy.exchange(0);
     if ((!x && !y) || !Active() || (Pointing() && !MapDrag())) return false;
     const app::Settings& s = app::Get();
-    // versus has a sensitivity per view instead (versus/mouse.cpp)
-    float horizontal = kVersus ? 1.0f : s.mouse_sensitivity;
-    float vertical = kVersus ? 1.0f : s.mouse_vertical_sensitivity;
-    bool aim = g_aiming && !kVersus;
-    dx = float(s.invert_mouse_x ? -x : x) * (aim ? s.aim_horizontal_sensitivity : horizontal);
-    dy = float(s.invert_mouse ? -y : y) * (aim ? s.aim_vertical_sensitivity : vertical);
+    dx = float(x) * s.mouse_sensitivity;
+    dy = float(s.invert_mouse ? -y : y) * s.mouse_sensitivity;
     return true;
 }
 
@@ -1249,34 +1207,12 @@ void SetNetSession(bool net) {
     if (g_net.exchange(net) != net) LOGI("input: %s a synced co-op session", net ? "in" : "out of");
 }
 
-void SetTrainingVideo(bool on) {
-    g_video = on;
-}
-
 void SetInteractReloads(bool on) {
     g_interact_reloads = on;
 }
 
 void SetTargeting(bool on) {
     g_targeting = on;
-}
-
-void SetAiming(bool on) {
-    g_aiming = on;
-}
-
-bool Aiming() {
-    return g_aiming;
-}
-
-LookScale PadLookScale(bool aiming) {
-    const app::Settings& s = app::Get();
-    if (aiming) return {s.pad_aim_horizontal_sensitivity, s.pad_aim_vertical_sensitivity};
-    return {s.pad_horizontal_sensitivity, s.pad_vertical_sensitivity};
-}
-
-float GameDeadZone() {
-    return kVersus ? kVersusFloor : kDeadZone;
 }
 
 void SetCarrying(bool on) {
@@ -1345,10 +1281,8 @@ bool AnswerKey(int vk) {
     bool media_or_reserved = (vk >= VK_BROWSER_BACK && vk <= VK_LAUNCH_APP2) || (vk >= 0x3A && vk <= 0x40) ||
                              (vk >= 0x88 && vk <= 0x9F) || (vk >= 0xC1 && vk <= 0xDA);
     if (media_or_reserved) return false;
-    bool toggle = Bound(KeyEvent::HideHud, vk) || Bound(KeyEvent::ToggleTextures, vk);
-    if (ConsoleKey(vk) || toggle || Bound(KeyEvent::SettingsPanel, vk)) return false;
-    // vk is the layout's own key here, not a bind position
-    return GetAsyncKeyState(vk) < 0;
+    if (ConsoleKey(vk) || Bound(KeyEvent::HideHud, vk) || Bound(KeyEvent::SettingsPanel, vk)) return false;
+    return Down(vk);
 }
 
 // the key (virtual key code) or pad button (0x100 + port * 16 + bit) that went down, 0 for none. Away from the
@@ -1424,14 +1358,24 @@ bool SkipKeyReleased() {
 }
 
 bool Cursor(int& x, int& y, int& w, int& h) {
+    if (!Active()) return false;
+#ifdef _WIN32
     POINT pt;
     RECT r;
-    if (!Active() || !GetCursorPos(&pt) || !ScreenToClient(g_hwnd, &pt) || !GetClientRect(g_hwnd, &r)) return false;
+    if (!GetCursorPos(&pt) || !ScreenToClient(g_hwnd, &pt) || !GetClientRect(g_hwnd, &r)) return false;
     x = pt.x;
     y = pt.y;
     w = r.right;
     h = r.bottom;
     return true;
+#else
+    w = g_win_w.load(std::memory_order_relaxed);
+    h = g_win_h.load(std::memory_order_relaxed);
+    if (w <= 0 || h <= 0) return false;
+    x = g_mouse_x.load(std::memory_order_relaxed);
+    y = g_mouse_y.load(std::memory_order_relaxed);
+    return true;
+#endif
 }
 
 uint32_t Clicks() { return g_clicks; }
@@ -1449,7 +1393,7 @@ const Action* Actions(size_t* count) {
 
 std::string Binding(size_t action) {
     std::lock_guard lock(g_bind_lock);
-    return action < kCount ? Join(g_binds[action], true) : std::string();
+    return action < kCount ? Join(g_binds[action]) : std::string();
 }
 
 // the settings panel with no key would leave a keyboard player no way back into it
@@ -1494,7 +1438,6 @@ bool TakeDeletePress() {
 }
 
 bool ConsoleKey(int vk) {
-    vk = PositionVk(vk);
     std::lock_guard lock(g_bind_lock);
     if (kConsoleAction >= kCount) return false;
     const auto& b = g_binds[kConsoleAction];
@@ -1509,7 +1452,7 @@ bool ConsoleChar(unsigned c) {
     if (kConsoleAction >= kCount) return false;
     for (int vk : g_binds[kConsoleAction]) {
         // MapVirtualKey's top bit flags a dead key
-        unsigned k = MapVirtualKeyExW(UINT(LiveVk(vk)), MAPVK_VK_TO_CHAR, Layout()) & 0x7FFF;
+        unsigned k = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_CHAR) & 0x7FFF;
         if (k && towupper(wint_t(c)) == towupper(wint_t(k))) return true;
     }
     return false;
@@ -1709,10 +1652,242 @@ void Rumble(int port, uint16_t left, uint16_t right) {
         right = 0;
     }
     if (keyboard) g_rumbling = left || right;
-    uint32_t strength = app::Get().vibration_strength;
-    left = uint16_t(std::min<uint32_t>(left * strength / 100, 0xFFFF));
-    right = uint16_t(std::min<uint32_t>(right * strength / 100, 0xFFFF));
     SetMotors(slot, left, right);
+}
+
+#ifndef _WIN32
+static int ScancodeToVk(SDL_Scancode sc) {
+    if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) return 'A' + (sc - SDL_SCANCODE_A);
+    if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) return '1' + (sc - SDL_SCANCODE_1);
+    if (sc == SDL_SCANCODE_0) return '0';
+    switch (sc) {
+        case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: return VK_RETURN;
+        case SDL_SCANCODE_ESCAPE: return VK_ESCAPE;
+        case SDL_SCANCODE_BACKSPACE: return VK_BACK;
+        case SDL_SCANCODE_TAB: return VK_TAB;
+        case SDL_SCANCODE_SPACE: return VK_SPACE;
+        case SDL_SCANCODE_MINUS: return VK_OEM_MINUS;
+        case SDL_SCANCODE_EQUALS: return VK_OEM_PLUS;
+        case SDL_SCANCODE_LEFTBRACKET: return VK_OEM_4;
+        case SDL_SCANCODE_RIGHTBRACKET: return VK_OEM_6;
+        case SDL_SCANCODE_BACKSLASH: return VK_OEM_5;
+        case SDL_SCANCODE_SEMICOLON: return VK_OEM_1;
+        case SDL_SCANCODE_APOSTROPHE: return VK_OEM_7;
+        case SDL_SCANCODE_GRAVE: return VK_OEM_3;
+        case SDL_SCANCODE_COMMA: return VK_OEM_COMMA;
+        case SDL_SCANCODE_PERIOD: return VK_OEM_PERIOD;
+        case SDL_SCANCODE_SLASH: return VK_OEM_2;
+        case SDL_SCANCODE_CAPSLOCK: return VK_CAPITAL;
+        case SDL_SCANCODE_F1: return VK_F1;
+        case SDL_SCANCODE_F2: return VK_F2;
+        case SDL_SCANCODE_F3: return VK_F3;
+        case SDL_SCANCODE_F4: return VK_F4;
+        case SDL_SCANCODE_F5: return VK_F5;
+        case SDL_SCANCODE_F6: return VK_F6;
+        case SDL_SCANCODE_F7: return VK_F7;
+        case SDL_SCANCODE_F8: return VK_F8;
+        case SDL_SCANCODE_F9: return VK_F9;
+        case SDL_SCANCODE_F10: return VK_F10;
+        case SDL_SCANCODE_F11: return VK_F11;
+        case SDL_SCANCODE_F12: return VK_F12;
+        case SDL_SCANCODE_PRINTSCREEN: return VK_SNAPSHOT;
+        case SDL_SCANCODE_SCROLLLOCK: return VK_SCROLL;
+        case SDL_SCANCODE_PAUSE: return VK_PAUSE;
+        case SDL_SCANCODE_INSERT: return VK_INSERT;
+        case SDL_SCANCODE_HOME: return VK_HOME;
+        case SDL_SCANCODE_PAGEUP: return VK_PRIOR;
+        case SDL_SCANCODE_DELETE: return VK_DELETE;
+        case SDL_SCANCODE_END: return VK_END;
+        case SDL_SCANCODE_PAGEDOWN: return VK_NEXT;
+        case SDL_SCANCODE_RIGHT: return VK_RIGHT;
+        case SDL_SCANCODE_LEFT: return VK_LEFT;
+        case SDL_SCANCODE_DOWN: return VK_DOWN;
+        case SDL_SCANCODE_UP: return VK_UP;
+        case SDL_SCANCODE_KP_DIVIDE: return VK_DIVIDE;
+        case SDL_SCANCODE_KP_MULTIPLY: return VK_MULTIPLY;
+        case SDL_SCANCODE_KP_MINUS: return VK_SUBTRACT;
+        case SDL_SCANCODE_KP_PLUS: return VK_ADD;
+        case SDL_SCANCODE_KP_1: return VK_NUMPAD1;
+        case SDL_SCANCODE_KP_2: return VK_NUMPAD2;
+        case SDL_SCANCODE_KP_3: return VK_NUMPAD3;
+        case SDL_SCANCODE_KP_4: return VK_NUMPAD4;
+        case SDL_SCANCODE_KP_5: return VK_NUMPAD5;
+        case SDL_SCANCODE_KP_6: return VK_NUMPAD6;
+        case SDL_SCANCODE_KP_7: return VK_NUMPAD7;
+        case SDL_SCANCODE_KP_8: return VK_NUMPAD8;
+        case SDL_SCANCODE_KP_9: return VK_NUMPAD9;
+        case SDL_SCANCODE_KP_0: return VK_NUMPAD0;
+        case SDL_SCANCODE_KP_PERIOD: return VK_DECIMAL;
+        case SDL_SCANCODE_LCTRL: return VK_LCONTROL;
+        case SDL_SCANCODE_RCTRL: return VK_RCONTROL;
+        case SDL_SCANCODE_LSHIFT: return VK_LSHIFT;
+        case SDL_SCANCODE_RSHIFT: return VK_RSHIFT;
+        case SDL_SCANCODE_LALT: return VK_LMENU;
+        case SDL_SCANCODE_RALT: return VK_RMENU;
+        case SDL_SCANCODE_LGUI: return VK_LWIN;
+        case SDL_SCANCODE_RGUI: return VK_RWIN;
+        default: return 0;
+    }
+}
+
+static int MouseButtonToVk(Uint8 button) {
+    switch (button) {
+        case SDL_BUTTON_LEFT: return VK_LBUTTON;
+        case SDL_BUTTON_RIGHT: return VK_RBUTTON;
+        case SDL_BUTTON_MIDDLE: return VK_MBUTTON;
+        case SDL_BUTTON_X1: return VK_XBUTTON1;
+        case SDL_BUTTON_X2: return VK_XBUTTON2;
+        default: return 0;
+    }
+}
+#endif
+
+void ProcessEvent(const SDL_Event& event) {
+#ifndef _WIN32
+    switch (event.type) {
+        case SDL_EVENT_KEY_DOWN: {
+            int vk = ScancodeToVk(event.key.scancode);
+            if (vk > 0 && vk < 256) {
+                g_key_state[vk].store(true, std::memory_order_relaxed);
+                if (vk == VK_LSHIFT || vk == VK_RSHIFT) g_key_state[VK_SHIFT].store(true, std::memory_order_relaxed);
+                if (vk == VK_LCONTROL || vk == VK_RCONTROL) g_key_state[VK_CONTROL].store(true, std::memory_order_relaxed);
+                if (vk == VK_LMENU || vk == VK_RMENU) g_key_state[VK_MENU].store(true, std::memory_order_relaxed);
+                g_keyboard_ms = NowMs();
+            }
+            if (!event.key.repeat) {
+                if (HostKey(KeyEvent::SettingsPanel, vk)) {
+                    app::ToggleMenu();
+                } else if (!app::MenuOpen() && HostKey(KeyEvent::HideHud, vk)) {
+                    app::g_hide_hud = !app::g_hide_hud;
+                } else if (vk == VK_ESCAPE && app::MenuOpen() && !app::Capturing()) {
+                    app::ToggleMenu();
+                } else if (vk == VK_ESCAPE && app::ConsoleOpen()) {
+                    app::ToggleConsole();
+                } else if (ConsoleKey(vk) && !app::MenuOpen()) {
+                    app::ToggleConsole();
+                }
+            }
+            break;
+        }
+        case SDL_EVENT_KEY_UP: {
+            int vk = ScancodeToVk(event.key.scancode);
+            if (vk > 0 && vk < 256) {
+                g_key_state[vk].store(false, std::memory_order_relaxed);
+                if (vk == VK_LSHIFT || vk == VK_RSHIFT) {
+                    bool other = g_key_state[vk == VK_LSHIFT ? VK_RSHIFT : VK_LSHIFT].load(std::memory_order_relaxed);
+                    if (!other) g_key_state[VK_SHIFT].store(false, std::memory_order_relaxed);
+                }
+                if (vk == VK_LCONTROL || vk == VK_RCONTROL) {
+                    bool other = g_key_state[vk == VK_LCONTROL ? VK_RCONTROL : VK_LCONTROL].load(std::memory_order_relaxed);
+                    if (!other) g_key_state[VK_CONTROL].store(false, std::memory_order_relaxed);
+                }
+                if (vk == VK_LMENU || vk == VK_RMENU) {
+                    bool other = g_key_state[vk == VK_LMENU ? VK_RMENU : VK_LMENU].load(std::memory_order_relaxed);
+                    if (!other) g_key_state[VK_MENU].store(false, std::memory_order_relaxed);
+                }
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+            int vk = MouseButtonToVk(event.button.button);
+            if (vk > 0 && vk < 256) {
+                g_key_state[vk].store(true, std::memory_order_relaxed);
+                g_keyboard_ms = NowMs();
+            }
+            if (event.button.button == SDL_BUTTON_LEFT) {
+                OnPress();
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            int vk = MouseButtonToVk(event.button.button);
+            if (vk > 0 && vk < 256) {
+                g_key_state[vk].store(false, std::memory_order_relaxed);
+            }
+            if (event.button.button == SDL_BUTTON_LEFT) {
+                OnClick();
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_MOTION: {
+            g_mouse_x.store(int(event.motion.x), std::memory_order_relaxed);
+            g_mouse_y.store(int(event.motion.y), std::memory_order_relaxed);
+            static float s_rem_x = 0.0f, s_rem_y = 0.0f;
+            s_rem_x += event.motion.xrel;
+            s_rem_y += event.motion.yrel;
+            int ix = int(s_rem_x);
+            int iy = int(s_rem_y);
+            s_rem_x -= float(ix);
+            s_rem_y -= float(iy);
+            if (ix != 0 || iy != 0) {
+                g_keyboard_ms = NowMs();
+                g_dx += ix;
+                g_dy += iy;
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_WHEEL: {
+            int notch = event.wheel.y > 0 ? 1 : event.wheel.y < 0 ? -1 : 0;
+            if (notch) {
+                g_wheel_ms[notch < 0] = NowMs();
+                g_keyboard_ms = NowMs();
+                if (g_map) {
+                    Notch(notch);
+                } else if (g_menu || g_list) {
+                    g_menu_wheel += notch * 120;
+                } else if (kVersus) {
+                    Notch(notch);
+                } else {
+                    int vk = notch > 0 ? kWheelUp : kWheelDown;
+                    std::lock_guard lock(g_bind_lock);
+                    for (size_t i = 0; i < kCount; i++) {
+                        if (ZoomOf(i) && std::ranges::find(g_binds[i], vk) != g_binds[i].end()) Notch(ZoomOf(i));
+                    }
+                }
+            }
+            break;
+        }
+        case SDL_EVENT_TEXT_INPUT: {
+            if (event.text.text) {
+                for (const char* p = event.text.text; *p; ++p) {
+                    OnChar((unsigned char)*p);
+                }
+            }
+            break;
+        }
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        case SDL_EVENT_WINDOW_RESIZED: {
+            int w = 0, h = 0;
+            if (g_hwnd) {
+                SDL_GetWindowSize(static_cast<SDL_Window*>(g_hwnd), &w, &h);
+                if (w > 0 && h > 0) {
+                    g_win_w.store(w, std::memory_order_relaxed);
+                    g_win_h.store(h, std::memory_order_relaxed);
+                }
+            }
+            break;
+        }
+        case SDL_EVENT_WINDOW_FOCUS_LOST: {
+            ReleaseCursor();
+            for (auto& k : g_key_state) k.store(false, std::memory_order_relaxed);
+            break;
+        }
+        case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+            g_settle = true;
+            break;
+        }
+        case SDL_EVENT_GAMEPAD_ADDED: {
+            HandleGamepadAdded(event.gdevice.which);
+            break;
+        }
+        case SDL_EVENT_GAMEPAD_REMOVED: {
+            HandleGamepadRemoved(event.gdevice.which);
+            break;
+        }
+        default:
+            break;
+    }
+#endif
 }
 
 }  // namespace input

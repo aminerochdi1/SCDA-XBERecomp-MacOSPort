@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -19,6 +20,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <SDL3/SDL.h>
+#ifndef VK_ESCAPE
+#define VK_ESCAPE 0x1B
+#endif
+#endif
 
 #include <imgui.h>
 
@@ -42,24 +49,16 @@ constexpr uint32_t kMsaaValues[] = {0, 2, 4, 8};
 const char* const kMsaaNames[] = {"OFF", "2x", "4x", "8x"};
 constexpr uint32_t kAoValues[] = {0, 1, 2};
 const char* const kAoNames[] = {"OFF", "SSAO", "GTAO"};
-constexpr uint32_t kFmvScales[] = {0, 1};
-const char* const kFmvScaleNames[] = {"FILL", "4:3"};
-constexpr uint32_t kColourBlindModes[] = {0, 1, 2, 3};
-const char* const kColourBlindNames[] = {"OFF", "PROTANOPIA", "DEUTERANOPIA", "TRITANOPIA"};
-constexpr uint32_t kDumpFormats[] = {0, 1};
-const char* const kDumpFormatNames[] = {"PNG", "DDS"};
 constexpr uint32_t kAudioOutputs[] = {audio::kOutputAuto, audio::kOutputMono, audio::kOutputStereo,
                                       audio::kOutputSurround};
 const char* const kAudioOutputNames[] = {"AUTOMATIC", "MONO", "2.0 STEREO", "5.1 SURROUND"};
 constexpr uint32_t kShadowSizes[] = {0, 512, 1024, 2048, 4096, 8192};
 constexpr uint32_t kShadowDistances[] = {1, 2, 4, 8};
 constexpr uint32_t kFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, 240, 360, kFpsCapRefresh, 0};
-constexpr uint32_t kVersusFpsCaps[] = {30, 60, 75, 90, 120, 144, 165, kVersusMaxFps, kFpsCapRefresh, 0};
 // co-op steps last whole ms, so each rate is the top of its step: 1000/rate rounds down to the same period
 constexpr uint32_t kTickRates[] = {0, 30, 50, 60, 100, 111, 125, 142};
 constexpr uint32_t kDelayFloors[] = {0, 10, 20, 30, 40, 50};
-// "auto" then kLanguages
-const char* const kLanguageNames[] = {"AUTOMATIC", "ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH"};
+const char* const kLanguageNames[] = {"ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH"};  // as kLanguages
 // player 2 may be empty from its own list, player 1 never (SetPlayer)
 constexpr Port kPlayer1Choices[] = {{true, 0},  {true, 1},  {true, 2},  {true, 3}, {true, -1},
                                     {false, 0}, {false, 1}, {false, 2}, {false, 3}};
@@ -105,16 +104,10 @@ int StepTable(const uint32_t (&values)[N], uint32_t& value, int step) {
     return i;
 }
 
-// one of names, stepped first
-template <size_t N>
-void StepName(uint32_t& value, const char* const (&names)[N], int step, char (&text)[64]) {
-    value = uint32_t(StepIndex(int(std::min<size_t>(value, N - 1)), step, int(N)));
-    std::snprintf(text, sizeof(text), "%s", names[value]);
-}
-
 // the monitor's modes smallest first, so Left steps down; the primary's for empty
 std::vector<Mode> Modes(const std::string& monitor) {
     std::vector<Mode> modes;
+#ifdef _WIN32
     std::wstring device(monitor.begin(), monitor.end());
     DEVMODEW dm{};
     dm.dmSize = sizeof(dm);
@@ -124,6 +117,23 @@ std::vector<Mode> Modes(const std::string& monitor) {
         auto same = [&](const Mode& o) { return o.width == m.width && o.height == m.height; };
         if (std::none_of(modes.begin(), modes.end(), same)) modes.push_back(m);
     }
+#else
+    int count = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&count);
+    if (displays && count > 0) {
+        int mode_count = 0;
+        SDL_DisplayMode const* const* sdl_modes = SDL_GetFullscreenDisplayModes(displays[0], &mode_count);
+        if (sdl_modes) {
+            for (int i = 0; i < mode_count; i++) {
+                if (sdl_modes[i]->w < 640) continue;
+                Mode m{uint32_t(sdl_modes[i]->w), uint32_t(sdl_modes[i]->h)};
+                auto same = [&](const Mode& o) { return o.width == m.width && o.height == m.height; };
+                if (std::none_of(modes.begin(), modes.end(), same)) modes.push_back(m);
+            }
+        }
+    }
+    if (modes.empty()) modes.push_back({1920, 1080});
+#endif
     std::sort(modes.begin(), modes.end(), [](const Mode& a, const Mode& b) {
         return a.width != b.width ? a.width < b.width : a.height < b.height;
     });
@@ -313,11 +323,7 @@ enum RowId {
     kShaderModel, kHdr, kToneMapping, kSkipIntros, kTickRate, kInputDelay, kJoinIp, kMicrophone,
     kPushToTalk, kSensitivity, kInvertMouse,
     kPlayer1, kPlayer2, kShadowDistance, kMsaa, kFov, kAmbientOcclusion, kSmaa, kLanguage, kMonitor,
-    kAudioOutput, kHdrOutput, kShadowFilter, kBrightness, kContrast, kPauseOnFocusLoss, kFreeLookSensitivity, kWeaponSensitivity,
-    kSniperSensitivity, kFmvScale, kColourBlind, kAimHorizontal, kAimVertical, kInvertMouseX, kInvertPadX, kInvertPadY,
-    kSensitivityVertical, kPadDeadZone, kPadHorizontal, kPadVertical, kPadAimHorizontal, kPadAimVertical,
-    kVibration, kGyroAiming, kGyroSensitivity, kGyroAxis, kGyroButton, kGyroButtonMode, kGyroRecenter, kGyroCalibrate,
-    kTextureReplacement, kTextureDumping, kDumpFormat
+    kAudioOutput, kHdrOutput, kShadowFilter, kBrightness, kContrast
 };
 
 using rows::Kind;
@@ -325,13 +331,12 @@ using rows::Row;
 
 constexpr bool kVersus = std::string_view(IMAGE_XBE) == "sc4_adv.xbe";
 
-bool IsGyroRow(int id) { return id >= kGyroAiming && id <= kGyroCalibrate; }
-
-// versus has no SM3 renderer or shadow options of story, nor co-op rows and gyro aiming
+// versus has none of the renderer features of story
 bool VersusHides(int id) {
     if (!kVersus) return false;
-    return id == kShaderModel || id == kHdr || id == kToneMapping || id == kShadowResolution ||
-           id == kShadowDistance || id == kShadowFilter || id == kTickRate || id == kInputDelay || IsGyroRow(id);
+    return id == kShaderModel || id == kHdr || id == kToneMapping || id == kAmbientOcclusion ||
+           id == kMsaa || id == kShadowResolution || id == kShadowDistance || id == kShadowFilter || id == kMaxFps ||
+           id == kTickRate || id == kInputDelay;
 }
 
 constexpr Row kSettingsRows[] = {
@@ -347,8 +352,6 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kHdrOutput, "HDR OUTPUT"},
     {Kind::Value, kMaxFps, "MAX FRAME RATE"},
     {Kind::Value, kFpsCounter, "FPS COUNTER"},
-    {Kind::Value, kFmvScale, "FMV SCALE"},
-    {Kind::Value, kColourBlind, "COLOUR BLIND MODE"},
     {Kind::Heading, -1, "GRAPHICS"},
     {Kind::Value, kShaderModel, "SHADER MODEL"},
     {Kind::Value, kHdr, "HDR RENDERING"},
@@ -362,7 +365,6 @@ constexpr Row kSettingsRows[] = {
     {Kind::Value, kShadowFilter, "SHADOW FILTER"},
     {Kind::Heading, -1, "GENERAL"},
     {Kind::Value, kSkipIntros, "SKIP INTROS"},
-    {Kind::Value, kPauseOnFocusLoss, "PAUSE ON FOCUS LOSS"},
     {Kind::Value, kLanguage, "LANGUAGE"},
     {Kind::Value, kAudioOutput, "AUDIO OUTPUT"},
     {Kind::Value, kTickRate, "COOP TICK RATE"},
@@ -373,27 +375,14 @@ constexpr Row kSettingsRows[] = {
     {Kind::Heading, -1, "INPUT DEVICES"},
     {Kind::Value, kPlayer1, "PLAYER 1"},
     {Kind::Value, kPlayer2, "PLAYER 2"},
-    {Kind::Heading, -1, "TEXTURES"},
-    {Kind::Value, kTextureReplacement, "TEXTURE REPLACEMENT"},
-    {Kind::Value, kTextureDumping, "TEXTURE DUMPING"},
-    {Kind::Value, kDumpFormat, "DUMP FORMAT"},
 };
 
 const std::vector<Row>& InputRows() {
     static const std::vector<Row> list = [] {
-        std::vector<Row> out = {{Kind::Heading, -1, "MOUSE"}};
-        if (kVersus)
-            out.insert(out.end(), {{Kind::Value, kFreeLookSensitivity, "FREE LOOK SENSITIVITY"},
-                                   {Kind::Value, kWeaponSensitivity, "WEAPON SENSITIVITY"},
-                                   {Kind::Value, kSniperSensitivity, "SNIPER SENSITIVITY"}});
-        else
-            out.insert(out.end(), {{Kind::Value, kSensitivity, "HORIZONTAL SENSITIVITY"},
-                                   {Kind::Value, kSensitivityVertical, "VERTICAL SENSITIVITY"}});
-        out.insert(out.end(), {{Kind::Value, kAimHorizontal, "AIM HORIZONTAL SENSITIVITY"},
-                               {Kind::Value, kAimVertical, "AIM VERTICAL SENSITIVITY"},
-                               {Kind::Value, kInvertMouseX, "INVERT X AXIS"},
-                               {Kind::Value, kInvertMouse, "INVERT Y AXIS"},
-                               {Kind::Heading, -1, "KEYBOARD"}});
+        std::vector<Row> out = {{Kind::Heading, -1, "MOUSE"},
+                                {Kind::Value, kSensitivity, "MOUSE SENSITIVITY"},
+                                {Kind::Value, kInvertMouse, "INVERT MOUSE"},
+                                {Kind::Heading, -1, "KEYBOARD"}};
         size_t count = 0;
         const input::Action* actions = input::Actions(&count);
         for (size_t i = 0; i < count; i++) out.push_back({Kind::Bind, int(i), actions[i].label});
@@ -404,24 +393,7 @@ const std::vector<Row>& InputRows() {
 
 const std::vector<Row>& PadRows() {
     static const std::vector<Row> list = [] {
-        std::vector<Row> out = {{Kind::Heading, -1, "GENERAL"},
-                                {Kind::Value, kPadHorizontal, "HORIZONTAL SENSITIVITY"},
-                                {Kind::Value, kPadVertical, "VERTICAL SENSITIVITY"},
-                                {Kind::Value, kPadAimHorizontal, "AIM HORIZONTAL SENSITIVITY"},
-                                {Kind::Value, kPadAimVertical, "AIM VERTICAL SENSITIVITY"},
-                                {Kind::Value, kInvertPadX, "INVERT X AXIS"},
-                                {Kind::Value, kInvertPadY, "INVERT Y AXIS"},
-                                {Kind::Value, kPadDeadZone, "DEADZONE"},
-                                {Kind::Value, kVibration, "VIBRATION STRENGTH"},
-                                {Kind::Heading, -1, "GYRO"},
-                                {Kind::Value, kGyroAiming, "GYRO AIMING"},
-                                {Kind::Value, kGyroSensitivity, "GYRO SENSITIVITY"},
-                                {Kind::Value, kGyroAxis, "GYRO AXIS"},
-                                {Kind::Value, kGyroButton, "GYRO BUTTON"},
-                                {Kind::Value, kGyroButtonMode, "GYRO BUTTON MODE"},
-                                {Kind::Value, kGyroRecenter, "RECENTER BUTTON"},
-                                {Kind::Value, kGyroCalibrate, "CALIBRATE GYRO"},
-                                {Kind::Heading, -1, "BUTTONS"}};
+        std::vector<Row> out;
         size_t count = 0;
         const input::Action* actions = input::PadActions(&count);
         for (size_t i = 0; i < count; i++) out.push_back({Kind::PadBind, int(i), actions[i].label});
@@ -433,11 +405,9 @@ const std::vector<Row>& PadRows() {
 // shader model 3.0 features
 bool ShaderModel3Row(int id) { return id == kHdr || id == kToneMapping; }
 
-// shown dimmed and left as it is: a shader model 3.0 feature at 1.1, HDR output without an HDR display, the dump
-// format while dumping is off
+// shown dimmed and left as it is: a shader model 3.0 feature at 1.1, HDR output without an HDR display
 bool Greyed(int id) {
     if (id == kHdrOutput) return !g_hdr_display;
-    if (id == kDumpFormat) return !Get().dump_textures;
     return ShaderModel3Row(id) && Get().shader_model < 3;
 }
 
@@ -451,15 +421,8 @@ bool* ToggleFlag(Settings& s, int id) {
         case kToneMapping: return &s.tone_mapping;
         case kSmaa: return &s.smaa;
         case kSkipIntros: return &s.skip_intros;
-        case kPauseOnFocusLoss: return &s.pause_on_focus_loss;
         case kPushToTalk: return &s.push_to_talk;
         case kInvertMouse: return &s.invert_mouse;
-        case kInvertMouseX: return &s.invert_mouse_x;
-        case kInvertPadX: return &s.invert_pad_x;
-        case kInvertPadY: return &s.invert_pad_y;
-        case kGyroAiming: return &s.gyro.enabled;
-        case kTextureReplacement: return &s.custom_textures;
-        case kTextureDumping: return &s.dump_textures;
         default: return nullptr;
     }
 }
@@ -541,18 +504,9 @@ bool StepDisplayRow(int id, int step, Settings& s, char (&text)[64]) {
         case kRenderResolution: {
             // 20% to 200% in steps of 5
             if (step) s.render_percent = uint32_t(StepRange(int(s.render_percent), 20, 200, 5, step));
-            // Get the selected monitor's mode before applying the display change
-            Mode out = StepResolution(s, 0);
+            Mode out = Output();
             std::snprintf(text, sizeof(text), "%u%% (%ux%u)", s.render_percent, out.width * s.render_percent / 100,
                           out.height * s.render_percent / 100);
-            return true;
-        }
-        case kFmvScale:
-            std::snprintf(text, sizeof(text), "%s", kFmvScaleNames[StepTable(kFmvScales, s.fmv_scale, step)]);
-            return true;
-        case kColourBlind: {
-            int mode = StepTable(kColourBlindModes, s.colour_blind, step);
-            std::snprintf(text, sizeof(text), "%s", kColourBlindNames[mode]);
             return true;
         }
         case kFov:
@@ -568,15 +522,7 @@ bool StepDisplayRow(int id, int step, Settings& s, char (&text)[64]) {
             return true;
         }
         case kMaxFps: {
-            uint32_t cap;
-            if (kVersus) {
-                // scda.toml is shared with story: a cap over versus's top shows as that top
-                uint32_t v = s.fps_cap <= kVersusMaxFps ? s.fps_cap : kVersusMaxFps;
-                cap = kVersusFpsCaps[StepTable(kVersusFpsCaps, v, step)];
-                if (step) s.fps_cap = v;
-            } else {
-                cap = kFpsCaps[StepTable(kFpsCaps, s.fps_cap, step)];
-            }
+            uint32_t cap = kFpsCaps[StepTable(kFpsCaps, s.fps_cap, step)];
             if (cap == kFpsCapRefresh) std::snprintf(text, sizeof(text), "REFRESH RATE");
             else if (cap) std::snprintf(text, sizeof(text), "%u", cap);
             else std::snprintf(text, sizeof(text), "UNLIMITED");
@@ -618,46 +564,23 @@ bool StepGraphicsRow(int id, int step, Settings& s, char (&text)[64]) {
             if (step) s.shadow_filter = StepIndex(s.shadow_filter >= 3, step, 2) ? 3 : 1;
             std::snprintf(text, sizeof(text), "%s", s.shadow_filter >= 3 ? "SM3 SOFT" : "SM1.1 (DEFAULT)");
             return true;
-        case kDumpFormat: {
-            int format = StepTable(kDumpFormats, s.texture_dump_format, step);
-            std::snprintf(text, sizeof(text), "%s", kDumpFormatNames[format]);
-            return true;
-        }
         default:
             return false;
     }
 }
 
 // the general, input device and mouse rows that are no ON / OFF, stepped first
-// the setting a sensitivity row steps
-float& Sensitivity(Settings& s, int id) {
-    switch (id) {
-        case kSensitivityVertical: return s.mouse_vertical_sensitivity;
-        case kFreeLookSensitivity: return s.free_look_sensitivity;
-        case kWeaponSensitivity: return s.weapon_sensitivity;
-        case kSniperSensitivity: return s.sniper_sensitivity;
-        case kAimHorizontal: return s.aim_horizontal_sensitivity;
-        case kAimVertical: return s.aim_vertical_sensitivity;
-        case kPadHorizontal: return s.pad_horizontal_sensitivity;
-        case kPadVertical: return s.pad_vertical_sensitivity;
-        case kPadAimHorizontal: return s.pad_aim_horizontal_sensitivity;
-        case kPadAimVertical: return s.pad_aim_vertical_sensitivity;
-        default: return s.mouse_sensitivity;
-    }
-}
-
 void StepGeneralRow(int id, int step, Settings& s, char (&text)[64]) {
     switch (id) {
         case kLanguage: {
-            int count = int(std::size(kLanguageNames));
+            int count = int(std::size(kLanguages));
             int i = 0;
-            while (i < count - 1 && s.language != (i ? kLanguages[i - 1] : "auto")) i++;
+            while (i < count - 1 && s.language != kLanguages[i]) i++;
             if (step) {
                 i = StepIndex(i, step, count);
-                s.language = i ? kLanguages[i - 1] : "auto";
+                s.language = kLanguages[i];
             }
-            bool restart = ResolveLanguage(s.language) != BootLanguage();
-            std::snprintf(text, sizeof(text), restart ? "%s (RESTART)" : "%s", kLanguageNames[i]);
+            std::snprintf(text, sizeof(text), s.language == BootLanguage() ? "%s" : "%s (RESTART)", kLanguageNames[i]);
             break;
         }
         case kAudioOutput:
@@ -682,65 +605,13 @@ void StepGeneralRow(int id, int step, Settings& s, char (&text)[64]) {
             break;
         }
         case kSensitivity:
-        case kSensitivityVertical:
-        case kFreeLookSensitivity:
-        case kWeaponSensitivity:
-        case kSniperSensitivity:
-        case kAimHorizontal:
-        case kAimVertical:
-        case kPadHorizontal:
-        case kPadVertical:
-        case kPadAimHorizontal:
-        case kPadAimVertical: {
-            float& v = Sensitivity(s, id);
-            // 0.1 to 20.0 in steps of 0.1, shown as five times the stored value so the game's own reads 5.0
-            int shown = std::clamp(int(std::lround(v * 50.0f)), 1, 200);
-            if (step) {
-                shown = StepRange(shown, 1, 200, 1, step);
-                v = float(shown) / 50.0f;
-            }
-            std::snprintf(text, sizeof(text), "%.1f", float(shown) / 10.0f);
-            break;
-        }
-        case kGyroSensitivity: {
-            float& v = s.gyro.sensitivity;
             // 0.1 to 5.0 in steps of 0.1
-            if (step) v = float(StepRange(int(std::lround(v * 10.0f)), 1, 50, 1, step)) / 10.0f;
-            std::snprintf(text, sizeof(text), "%.1f", v);
+            if (step) {
+                int tenths = StepRange(int(std::lround(s.mouse_sensitivity * 10.0f)), 1, 50, 1, step);
+                s.mouse_sensitivity = float(tenths) / 10.0f;
+            }
+            std::snprintf(text, sizeof(text), "%.1f", s.mouse_sensitivity);
             break;
-        }
-        case kGyroAxis:
-            StepName(s.gyro.axis, gyro::kAxisNames, step, text);
-            break;
-        case kGyroButton:
-            StepName(s.gyro.button, gyro::kButtonNames, step, text);
-            break;
-        case kGyroButtonMode:
-            StepName(s.gyro.button_mode, gyro::kButtonModeNames, step, text);
-            break;
-        case kGyroRecenter:
-            StepName(s.gyro.recenter_button, gyro::kButtonNames, step, text);
-            break;
-        case kGyroCalibrate:
-            // a step shown on a copy of the settings starts nothing
-            if (step && &s == &Get()) gyro::StartCalibration();
-            std::snprintf(text, sizeof(text), "%s", gyro::Calibrating() ? "KEEP STILL" : "START");
-            break;
-        case kVibration:
-            // 0% to 200% in steps of 10
-            if (step) s.vibration_strength = uint32_t(StepRange(int(s.vibration_strength), 0, 200, 10, step));
-            if (s.vibration_strength == 100) std::snprintf(text, sizeof(text), "100%% (DEFAULT)");
-            else std::snprintf(text, sizeof(text), "%u%%", s.vibration_strength);
-            break;
-        case kPadDeadZone: {
-            float game = input::GameDeadZone();
-            float zone = s.pad_dead_zone > 0.0f ? s.pad_dead_zone : game;
-            // 0.1 to 1.0 in steps of 0.1
-            if (step) s.pad_dead_zone = float(StepRange(int(std::lround(zone * 10.0f)), 1, 10, 1, step)) / 10.0f;
-            if (s.pad_dead_zone == 0.0f) std::snprintf(text, sizeof(text), "%.2g (DEFAULT)", game);
-            else std::snprintf(text, sizeof(text), "%.1f", s.pad_dead_zone);
-            break;
-        }
     }
 }
 
@@ -776,46 +647,20 @@ constexpr int kLevelsPage = 3;
 
 void RestoreDefaults(int page) {
     if (page == kControllerPage) {
-        Get().invert_pad_x = false;
-        Get().invert_pad_y = false;
-        Get().pad_dead_zone = 0.0f;
-        Get().vibration_strength = 100;
-        Get().gyro = gyro::Settings{};
-        Get().pad_horizontal_sensitivity = Get().pad_vertical_sensitivity = 1.0f;
-        Get().pad_aim_horizontal_sensitivity = Get().pad_aim_vertical_sensitivity = 1.0f;
         input::ResetPadBindings();
         return;
     }
     if (page == kKeyboardPage) {
         Settings& s = Get();
-        s.mouse_sensitivity = s.mouse_vertical_sensitivity = 1.0f;
-        s.free_look_sensitivity = s.weapon_sensitivity = s.sniper_sensitivity = 1.0f;
-        s.aim_horizontal_sensitivity = s.aim_vertical_sensitivity = 1.0f;
+        s.mouse_sensitivity = Settings{}.mouse_sensitivity;
         s.invert_mouse = false;
-        s.invert_mouse_x = false;
         input::ResetBindings();
         return;
     }
     Settings keep = Get();
     Get() = Settings{};
     Get().mouse_sensitivity = keep.mouse_sensitivity;
-    Get().mouse_vertical_sensitivity = keep.mouse_vertical_sensitivity;
-    Get().free_look_sensitivity = keep.free_look_sensitivity;
-    Get().weapon_sensitivity = keep.weapon_sensitivity;
-    Get().sniper_sensitivity = keep.sniper_sensitivity;
-    Get().aim_horizontal_sensitivity = keep.aim_horizontal_sensitivity;
-    Get().aim_vertical_sensitivity = keep.aim_vertical_sensitivity;
     Get().invert_mouse = keep.invert_mouse;
-    Get().invert_mouse_x = keep.invert_mouse_x;
-    Get().invert_pad_x = keep.invert_pad_x;
-    Get().invert_pad_y = keep.invert_pad_y;
-    Get().pad_dead_zone = keep.pad_dead_zone;
-    Get().vibration_strength = keep.vibration_strength;
-    Get().gyro = keep.gyro;
-    Get().pad_horizontal_sensitivity = keep.pad_horizontal_sensitivity;
-    Get().pad_vertical_sensitivity = keep.pad_vertical_sensitivity;
-    Get().pad_aim_horizontal_sensitivity = keep.pad_aim_horizontal_sensitivity;
-    Get().pad_aim_vertical_sensitivity = keep.pad_aim_vertical_sensitivity;
     Get().keys = keep.keys;
     Get().pad_buttons = keep.pad_buttons;
     Changed(true);
@@ -1192,12 +1037,6 @@ bool MenuOpen() { return g_open.load(std::memory_order_relaxed); }
 uint32_t SettingsRevision() { return g_revision; }
 
 bool Capturing() { return g_capture >= 0; }
-
-void ToggleTextureReplacement() {
-    std::lock_guard lock(UiLock());
-    Get().custom_textures = !Get().custom_textures;
-    Changed(false);
-}
 
 void ToggleMenu() {
     bool open = !g_open.load(std::memory_order_relaxed);

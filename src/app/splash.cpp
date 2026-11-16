@@ -2,6 +2,10 @@
 // window, ExitSplash closes it once InitEngine returns and the game window opens). Here SplinterCell4Logo.bmp or .png
 // beside the exe; the game boots behind it with its window hidden and waits at its first frame until the splash has
 // been up kMinimum, since this boot takes a fraction of a second. No file, or a relaunch into a mission: no splash.
+#include "app/app.h"
+#include "core/log.h"
+
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -19,13 +23,12 @@
 #include <thread>
 #include <vector>
 
-#include "app/app.h"
-#include "core/log.h"
-
 using Microsoft::WRL::ComPtr;
+#endif
 
 namespace app {
 
+#ifdef _WIN32
 namespace {
 
 constexpr auto kMinimum = std::chrono::seconds(1);
@@ -129,5 +132,15 @@ void CloseSplash() {
     if (g_splash) DestroyWindow(g_splash);
     g_splash = nullptr;
 }
+#else
+bool OpenSplash() { return false; }
+void SplashFirstFrame() {
+    static std::atomic<bool> once{false};
+    if (!once.exchange(true)) {
+        OpenGameWindow();
+    }
+}
+void CloseSplash() {}
+#endif
 
 }  // namespace app

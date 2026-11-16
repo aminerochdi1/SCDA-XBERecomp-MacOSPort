@@ -1,4 +1,5 @@
 // The title's Direct3D 8 calls drawn with Direct3D 12
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -13,7 +14,6 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -24,7 +24,6 @@
 #include <filesystem>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -41,7 +40,6 @@
 #include "gpu/smaa_shader.h"
 #include "gpu/smaa_textures.h"
 #include "gpu/texture.h"
-#include "gpu/texturedumper.h"
 #include "gpu/vertex.h"
 #include "kernel/kernel.h"
 
@@ -85,7 +83,7 @@ constexpr float kSdrWhiteUnit = 0.08f;  // Windows' SDR white level: 1000 is 80 
 constexpr auto kHoldMax = std::chrono::milliseconds(50);
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 colour[3]; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
@@ -107,18 +105,13 @@ float4 psmain(O i) : SV_Target {
     c /= n * n;
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
-    // colour[0].w: the rows hold a colour matrix, applied to linear colour
-    if (colour[0].w > 0) {
-        float3x3 m = float3x3(colour[0].xyz, colour[1].xyz, colour[2].xyz);
-        c.rgb = pow(saturate(mul(m, pow(saturate(c.rgb), 2.2))), 1 / 2.2);
-    }
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
 )";
 
 // the HDR resolve: exposure, bloom of what passes white, tone mapping
 const char* kPostHlsl = R"(
-cbuffer P : register(b1) { float4 p0; float4 p1; float4 p2; };
+cbuffer P : register(b1) { float4 p0; float4 p1; };
 Texture2D src : register(t0);
 Texture2D bloom : register(t1);
 Texture2D<float> expo : register(t2);
@@ -131,26 +124,20 @@ O vs(uint id : SV_VertexID) {
     o.uv = t;
     return o;
 }
-static const float3 kLum = float3(0.3, 0.59, 0.11);
-// Chaos Theory's eye adaptation, the scale the scene goes to. p0: headroom, glow strength, glow start, brightness
-// max; p1: brightness min, dark end, normal start, normal end; p2: bright start, dark, normal and bright scale
+static const float3 kLum = float3(0.2126, 0.7152, 0.0722);
+// p0: headroom, key, lowest and highest exposure; the log average luminance over a grid
 float exposure(O i) : SV_Target {
     float s = 0;
     for (int y = 0; y < 18; y++)
-        for (int x = 0; x < 32; x++) {
-            float3 c = src.SampleLevel(ls, (float2(x, y) + 0.5) / float2(32, 18), 0).rgb * p0.x;
-            float lit = dot(min(c, 1) + max(c - 1 - p0.z, 0) * p0.y, kLum);
-            s += log2(clamp(p0.w - lit, p1.x, p0.w));
-        }
-    float l = p0.w - exp2(s / 576);
-    if (l >= p1.w) return lerp(p2.z, p2.w, saturate((l - p1.w) / (p2.x - p1.w)));
-    return lerp(p2.y, p2.z, saturate((l - p1.y) / (p1.z - p1.y)));
+        for (int x = 0; x < 32; x++)
+            s += log(max(dot(src.SampleLevel(ls, (float2(x, y) + 0.5) / float2(32, 18), 0).rgb * p0.x, kLum), 1e-3));
+    return clamp(p0.y / exp(s / 576), p0.z, p0.w);
 }
-// p1: source texel; a quarter size copy of what passes 1
+// p1: source texel; a quarter size copy of what passes 1 after exposure
 float4 bright(O i) : SV_Target {
     float3 c = 0;
     for (int k = 0; k < 4; k++) c += src.SampleLevel(ls, i.uv + p1.xy * float2(k & 1 ? 1 : -1, k & 2 ? 1 : -1), 0).rgb;
-    return float4(max(c * 0.25 * p0.x - 1, 0), 1);
+    return float4(max(c * 0.25 * p0.x * expo.Load(int3(0, 0, 0)) - 1, 0), 1);
 }
 // p1: step; 9 gaussian taps in 5 bilinear reads
 float4 blur(O i) : SV_Target {
@@ -159,11 +146,18 @@ float4 blur(O i) : SV_Target {
     c += (src.SampleLevel(ls, i.uv + p1.xy * 3.230769, 0).rgb + src.SampleLevel(ls, i.uv - p1.xy * 3.230769, 0).rgb) * 0.070270;
     return float4(c, 1);
 }
-// p0: headroom, bloom strength; scene and glow times the exposure scale, clipped as Chaos Theory's
+// p0: headroom, tone mapping, bloom strength; linear up to the knee, highlights roll off towards white
 float4 tone(O i) : SV_Target {
     float4 s = src.Load(int3(i.p.xy, 0));
-    float3 c = s.rgb * p0.x + bloom.SampleLevel(ls, i.uv, 0).rgb * p0.y;
-    return float4(saturate(c * expo.Load(int3(0, 0, 0))), s.a);
+    float3 c = s.rgb * p0.x, b = bloom.SampleLevel(ls, i.uv, 0).rgb * p0.z;
+    if (p0.y > 0) {
+        const float a = 0.75;
+        c = c * expo.Load(int3(0, 0, 0)) + b;
+        c = min(c, a) + (1 - a) * (1 - exp(min(a - c, 0) / (1 - a)));
+    } else {
+        c += b;
+    }
+    return float4(saturate(c), s.a);
 }
 )";
 
@@ -623,9 +617,6 @@ struct Tex {
     uint64_t sig = 0;
     uint64_t frame = 0;
     bool norm = false;  // a normalization cube
-    const Tex* swap = nullptr;  // the texture pack's image drawn in its place
-    uint64_t pack_key = 0;      // its pack image is still loading
-    uint32_t pack_gen = 0;      // texturedumper::Generation the key was taken at, 0 after new bytes
 };
 
 struct PsoKey {
@@ -662,14 +653,6 @@ struct PsoKey {
 };
 static_assert(sizeof(PsoKey) == 184);
 
-// a pipeline as the key file keeps it: the key and its shaders' source checks, which find their bytecode on disk
-struct WarmKey {
-    PsoKey key;
-    uint64_t vs_check;
-    uint64_t ps_check;
-};
-static_assert(sizeof(WarmKey) == 200);
-
 // Blit's settings past the source and its rectangle
 struct BlitOptions {
     bool gamma = false;       // through the gamma lookup
@@ -679,7 +662,6 @@ struct BlitOptions {
     DXGI_FORMAT rtv = kBgra;  // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     uint32_t samples = 1;     // the target's sample count
-    const float* colour = nullptr;  // 3x3 colour matrix by rows, nullptr leaves colours alone
 };
 
 // a full screen pass's target
@@ -808,7 +790,7 @@ private:
     Readable ReadableResource(Target& t);
     uint32_t Samples(uint32_t want);
     void EnterHdr(Target& t);
-    bool DrawPostPass(const char* entry, const PostTarget& out, const PostInputs& in, std::span<const float> p,
+    bool DrawPostPass(const char* entry, const PostTarget& out, const PostInputs& in, const float p[8],
                       const PostOptions& o = {});
     ID3D12PipelineState* EnsurePostPipeline(const char* entry, const PostTarget& out, const PostOptions& o);
     D3D12_CPU_DESCRIPTOR_HANDLE PostRtv(uint32_t i);
@@ -818,7 +800,7 @@ private:
     void Resolve(Target& t);
     bool EnsureBloomTargets(uint32_t bw, uint32_t bh);
     bool EnsureExposureTarget();
-    float UpdateExposureBlend(float adaptation_time);
+    float UpdateExposureBlend();
     void DrawBloom(const PostInputs& in, const Target& t, uint32_t bw, uint32_t bh);
     // Smaa, then its steps in call order, each callee right after its caller
     struct SmaaLookup {
@@ -897,21 +879,13 @@ private:
     bool CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi);
     void UploadTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, bool same);
     void UploadTextureLevel(Tex& tx, uint32_t f, uint32_t l, const std::vector<uint8_t>& px, uint32_t pitch);
-    void LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo& fi);
-    void LatchPackImage(Tex& tx);
-    void ReleasePackTextures();
-    void CreatePackTexture(Tex& r, const texturedumper::Image& img);
     uint64_t EnsurePixelShader(const PixelKey& pk, uint64_t pkey);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
     ID3D12PipelineState* EnsurePipeline(const PsoKey& k, bool wait = false);
     void TakeBuilt();
-    void DeliverBuilt(uint64_t h, ComPtr<ID3D12PipelineState> pso);
-    void RememberPipeline(const PsoKey& k);
-    void WarmPipelines();
     ComPtr<ID3D12PipelineState> CreatePipeline(const PsoKey& k, uint64_t h, ID3DBlob* vs, ID3DBlob* ps, bool compile,
                                                bool& pending);
-    ComPtr<ID3D12PipelineState> BuildPipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, uint64_t key);
     void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
     void UploadConstants(const State& s, const DrawShaders& sh, const PsoKey& k, const DrawTextures& stages,
                          GuestSize size, DrawConstants& c);
@@ -1062,8 +1036,7 @@ private:
         std::string entry;
         std::string profile;
         ComPtr<ID3DBlob> code;
-        uint64_t check = 0;  // the second source hash the disk cache keeps
-        uint8_t state = 0;   // 0 source only, 1 compiling, 2 done (no code: it failed)
+        uint8_t state = 0;  // 0 source only, 1 compiling, 2 done (no code: it failed)
     };
     std::unordered_map<uint64_t, Source> shaders_;  // build threads too, under shader_lock_
     std::mutex shader_lock_;
@@ -1083,7 +1056,6 @@ private:
     uint32_t smp_used_ = 0;
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint32_t, Tex> textures_;
-    std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     // shader model 3.0 features, from the settings at each present
     bool sm3_ = false;
@@ -1199,7 +1171,6 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, DXGI_FORMAT_B8G8R8A8_UNORM, ui_heap_.Get(),
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
     LoadSettings();
-    WarmPipelines();
     Begin();
     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
     return true;
@@ -1349,18 +1320,10 @@ void D3D12Backend::LoadSettings() {
     msaa_ = Samples(msaa_set_);
 }
 
-// tone mapping, async shaders and the texture pack from the settings; sm3_ is set before
+// tone mapping and async shaders from the settings; sm3_ is set before
 void D3D12Backend::LatchFeatureSettings(const app::Settings& set) {
     tone_ = sm3_ && set.tone_mapping;
     async_ = set.async_shaders;
-    if (texturedumper::Update()) ReleasePackTextures();
-}
-
-// the pack's files changed: each image is made again when next drawn; Generation moved on, so every texture lets
-// go of its old copy before it draws
-void D3D12Backend::ReleasePackTextures() {
-    for (auto& entry : pack_textures_) CurrentFrame().garbage.push_back(entry.second.res);
-    pack_textures_.clear();
 }
 
 void D3D12Backend::Begin() {
@@ -1729,12 +1692,8 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
-    float c[20] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
-                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
-    if (o.colour) {
-        for (int row = 0; row < 3; row++) std::memcpy(c + 8 + row * 4, o.colour + row * 3, 3 * sizeof(float));
-        c[11] = 1.0f;
-    }
+    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over, o.samples), cb.gpu, slot, si);
 }
@@ -1765,7 +1724,6 @@ uint64_t D3D12Backend::Register(std::string src, const char* entry, const char* 
     std::lock_guard lock(shader_lock_);
     auto [it, fresh] = shaders_.try_emplace(hash);
     if (fresh) {
-        it->second.check = Hash(src.data(), src.size(), kSourceCheck);
         it->second.text = std::move(src);
         it->second.entry = entry;
         it->second.profile = profile;
@@ -1777,7 +1735,7 @@ ID3DBlob* D3D12Backend::EnsureShaderCode(uint64_t hash, bool compile, bool& pend
     std::unique_lock lock(shader_lock_);
     Source& s = shaders_[hash];
     if (s.state == 0) {
-        s.code = cache::FindShader(hash, s.check);
+        s.code = cache::FindShader(hash, Hash(s.text.data(), s.text.size(), kSourceCheck));
         if (s.code) {
             s.state = 2;
             s.text = {};
@@ -1832,8 +1790,7 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
 }
 
 ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over, uint32_t samples) {
-    uint64_t key = uint64_t(rtv) | uint64_t(over) << 32 | uint64_t(samples) << 40;
-    auto& pso = blit_psos_[key];
+    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32 | uint64_t(samples) << 40];
     if (pso) return pso.Get();
     ID3DBlob* vs = Compile(kBlitHlsl, "vs", "vs_5_0");
     ID3DBlob* ps = Compile(kBlitHlsl, "psmain", "ps_5_0");
@@ -1848,7 +1805,7 @@ ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over
         blend.DestBlendAlpha = D3D12_BLEND_ONE;
         blend.BlendOp = blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
     }
-    pso = BuildPipeline(d, key);
+    dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso));
     return pso.Get();
 }
 
@@ -1856,8 +1813,7 @@ ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over
 ID3D12PipelineState* D3D12Backend::EnsurePostPipeline(const char* entry, const PostTarget& out,
                                                       const PostOptions& o) {
     uint64_t seed = uint64_t(out.fmt) << 1 | (o.blend >= 0 ? 1 : 0) | uint64_t(out.samples) << 40;
-    uint64_t key = Hash(entry, std::strlen(entry), seed);
-    auto& pso = blit_psos_[key];
+    auto& pso = blit_psos_[Hash(entry, std::strlen(entry), seed)];
     if (pso) return pso.Get();
     ID3DBlob* vs = Compile(o.hlsl, o.vs_entry, "vs_5_0");
     ID3DBlob* ps = Compile(o.hlsl, entry, "ps_5_0");
@@ -1870,12 +1826,12 @@ ID3D12PipelineState* D3D12Backend::EnsurePostPipeline(const char* entry, const P
         b.DestBlend = b.DestBlendAlpha = D3D12_BLEND_INV_BLEND_FACTOR;
         b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
     }
-    pso = BuildPipeline(d, key);
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
     return pso.Get();
 }
 
-bool D3D12Backend::DrawPostPass(const char* entry, const PostTarget& out, const PostInputs& in,
-                                std::span<const float> p, const PostOptions& o) {
+bool D3D12Backend::DrawPostPass(const char* entry, const PostTarget& out, const PostInputs& in, const float p[8],
+                                const PostOptions& o) {
     ID3D12PipelineState* pso = EnsurePostPipeline(entry, out, o);
     if (!pso) return false;
     uint32_t slot = AllocSrvSlots(4);
@@ -1888,7 +1844,7 @@ bool D3D12Backend::DrawPostPass(const char* entry, const PostTarget& out, const 
         dev_->CreateShaderResourceView(i < 3 ? in.res[i] : nullptr, &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
     }
     Alloc cb = Upload(256, 256);
-    std::memcpy(cb.cpu, p.data(), p.size_bytes());
+    std::memcpy(cb.cpu, p, 8 * sizeof(float));
     cl_->OMSetRenderTargets(1, &out.rtv, FALSE, nullptr);
     SetFullViewport(out.w, out.h);
     if (o.blend >= 0) {
@@ -1947,39 +1903,16 @@ void D3D12Backend::EnterHdr(Target& t) {
     t.hdr = true;
 }
 
-// HDR resolve: bloom at a quarter of the target, exposure adapting as Chaos Theory's tone mapping
+// HDR resolve: bloom at a quarter of the target, exposure adapting over about a second
 constexpr uint32_t kBloomShrink = 4;
 constexpr DXGI_FORMAT kBloomFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 constexpr DXGI_FORMAT kExposureFormat = DXGI_FORMAT_R16_FLOAT;
+constexpr float kExposureRate = 1.5f;     // per second
+constexpr float kExposureMaxStep = 0.25f;  // longest frame time one step follows, in seconds
+constexpr float kExposureKey = 0.4f;       // the average luminance exposure aims for
+constexpr float kLowestExposure = 0.7f;    // under tone mapping; without it exposure stays at the highest
+constexpr float kHighestExposure = 1.0f;
 constexpr float kBloomStrength = 0.6f;
-
-// a level's Tonemapping settings, glow start out of 255
-struct ToneMapPreset {
-    float adaptation_time;
-    float glow_strength;
-    float glow_start;
-    float dark_scale;
-    float normal_scale;
-    float bright_scale;
-    float dark_end;
-    float normal_start;
-    float normal_end;
-    float bright_start;
-    float brightness_max;
-    float brightness_min;
-    float initial_scale;
-};
-// Double Agent's levels: Tonemapping and Tonemapping_NV
-constexpr ToneMapPreset kToneMap = {0.75f, 256, 16, 1.5f, 1.0f, 0.5f, 0.05f, 0.2f, 0.6f, 1.2f, 16, 0.01f, 1.5f};
-constexpr ToneMapPreset kToneMapNv = {0.8f, 256, 16, 1.0f, 0.6f, 0.4f, 0.0f, 0.05f, 0.2f, 0.35f, 16, 0.01f, 2.4f};
-// tone mapping off: every scale 1
-constexpr ToneMapPreset kNoToneMap = {0.75f, 256, 16, 1, 1, 1, 0.05f, 0.2f, 0.6f, 1.2f, 16, 0.01f, 1};
-
-// the preset tone mapping follows this frame
-const ToneMapPreset& CurrentToneMap(bool tone) {
-    if (!tone) return kNoToneMap;
-    return g_night_vision ? kToneMapNv : kToneMap;
-}
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12Backend::PostRtv(uint32_t i) {
     return Cpu(rtv_heap_.Get(), post_rtv_ + i, rtv_inc_);
@@ -2014,16 +1947,19 @@ bool D3D12Backend::EnsureBloomTargets(uint32_t bw, uint32_t bh) {
 bool D3D12Backend::EnsureExposureTarget() {
     if (expo_) return true;
     if (!CreatePostTarget(expo_, expo_state_, kExposureFormat, 1, 1, kExposureRtv)) return false;
+    // new memory can hold NaN, which the blend would keep forever
+    float one[4] = {1, 1, 1, 1};
+    cl_->ClearRenderTargetView(PostRtv(kExposureRtv), one, 0, nullptr);
     expo_fresh_ = true;
     return true;
 }
 
 // how far this frame's exposure moves towards the scene's, as a blend factor
-float D3D12Backend::UpdateExposureBlend(float adaptation_time) {
+float D3D12Backend::UpdateExposureBlend() {
     auto now = std::chrono::steady_clock::now();
-    float dt = std::max(std::chrono::duration<float>(now - expo_t_).count(), 0.0f);
+    float dt = std::clamp(std::chrono::duration<float>(now - expo_t_).count(), 0.0f, kExposureMaxStep);
     expo_t_ = now;
-    float a = expo_fresh_ ? 0.0f : std::min(dt / adaptation_time, 1.0f);
+    float a = expo_fresh_ ? 1.0f : 1.0f - std::exp(-dt * kExposureRate);
     expo_fresh_ = false;
     return a;
 }
@@ -2059,25 +1995,18 @@ void D3D12Backend::Resolve(Target& t) {
     uint32_t bh = std::max(1u, t.h / kBloomShrink);
     if (!EnsureBloomTargets(bw, bh)) return;
     if (!EnsureExposureTarget()) return;
-    const ToneMapPreset& tm = CurrentToneMap(tone_);
-    Transition(expo_.Get(), expo_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    // also keeps NaN in new memory out of the blend
-    if (expo_fresh_) {
-        float initial[4] = {tm.initial_scale, tm.initial_scale, tm.initial_scale, tm.initial_scale};
-        cl_->ClearRenderTargetView(PostRtv(kExposureRtv), initial, 0, nullptr);
-    }
-    float a = UpdateExposureBlend(tm.adaptation_time);
+    float a = UpdateExposureBlend();
     PostInputs in{{fb, nullptr, nullptr}, {t.fmt, kBloomFormat, kExposureFormat}};
-    float pe[12] = {kHeadroom, tm.glow_strength, tm.glow_start / 255, tm.brightness_max,
-                    tm.brightness_min, tm.dark_end, tm.normal_start, tm.normal_end,
-                    tm.bright_start, tm.dark_scale, tm.normal_scale, tm.bright_scale};
+    Transition(expo_.Get(), expo_state_, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    float lowest = tone_ ? kLowestExposure : kHighestExposure;
+    float pe[8] = {kHeadroom, kExposureKey, lowest, kHighestExposure};
     DrawPostPass("exposure", {PostRtv(kExposureRtv), kExposureFormat, 1, 1}, in, pe, {.blend = a});
     Transition(expo_.Get(), expo_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     in.res[2] = expo_.Get();
     DrawBloom(in, t, bw, bh);
     in.res[1] = bloom_[0].Get();
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    float pt[8] = {kHeadroom, kBloomStrength};
+    float pt[8] = {kHeadroom, tone_ ? 1.0f : 0.0f, kBloomStrength, 0};
     DrawPostPass("tone", {Cpu(rtv_heap_.Get(), t.view, rtv_inc_), t.fmt, t.w, t.h, t.samples}, in, pt);
 }
 
@@ -2400,8 +2329,7 @@ bool D3D12Backend::DrawSoftShadowPass(const SoftShadowFrame& f, const SoftShadow
 // the pass's pipeline, kept in blit_psos_; ms: the depth it reads is multisampled
 ID3D12PipelineState* D3D12Backend::EnsureSoftShadowPipeline(const SoftShadowPass& pass, bool ms) {
     uint64_t seed = uint64_t(pass.out) | uint64_t(ms) << 32 | uint64_t(pass.samples) << 40;
-    uint64_t key = Hash(pass.entry, std::strlen(pass.entry), seed);
-    auto& pso = blit_psos_[key];
+    auto& pso = blit_psos_[Hash(pass.entry, std::strlen(pass.entry), seed)];
     if (pso) return pso.Get();
     std::string text = std::string(ms ? "#define MS 1\n" : "") + kSoftShadowHlsl;
     ID3DBlob* vs = Compile(text, "vs", "vs_5_0");
@@ -2410,7 +2338,7 @@ ID3D12PipelineState* D3D12Backend::EnsureSoftShadowPipeline(const SoftShadowPass
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, pass.out, pass.samples);
     // onto the scene: its colour stays
     if (pass.alpha_only) d.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALPHA;
-    pso = BuildPipeline(d, key);
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
     return pso.Get();
 }
 
@@ -2465,8 +2393,7 @@ bool D3D12Backend::EnsureAoTargets(uint32_t w, uint32_t h) {
 // the pass's pipeline, kept in blit_psos_; ms: the depth it reads is multisampled
 ID3D12PipelineState* D3D12Backend::EnsureAoPipeline(const AoPass& pass, bool ms) {
     uint64_t seed = uint64_t(pass.out) | uint64_t(ms) << 32 | uint64_t(pass.samples) << 40;
-    uint64_t key = Hash(pass.entry, std::strlen(pass.entry), seed);
-    auto& pso = blit_psos_[key];
+    auto& pso = blit_psos_[Hash(pass.entry, std::strlen(pass.entry), seed)];
     if (pso) return pso.Get();
     std::string text = std::string(ms ? "#define MS 1\n" : "") + kAoHlsl;
     ID3DBlob* vs = Compile(text, "vs", "vs_5_0");
@@ -2482,7 +2409,7 @@ ID3D12PipelineState* D3D12Backend::EnsureAoPipeline(const AoPass& pass, bool ms)
         b.DestBlendAlpha = D3D12_BLEND_ONE;
         b.BlendOp = b.BlendOpAlpha = D3D12_BLEND_OP_ADD;
     }
-    pso = BuildPipeline(d, key);
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
     return pso.Get();
 }
 
@@ -2577,43 +2504,6 @@ void D3D12Backend::Occlusion(const State& s, const float p[kOcclusionParams]) {
     DrawOcclusionPasses(*rt, *ds, f);
 }
 
-void D3D12Backend::DeliverBuilt(uint64_t h, ComPtr<ID3D12PipelineState> pso) {
-    std::lock_guard lock(built_lock_);
-    built_.emplace_back(h, std::move(pso));
-    built_ready_.store(true, std::memory_order_release);
-}
-
-void D3D12Backend::RememberPipeline(const PsoKey& k) {
-    WarmKey w{k, 0, 0};
-    {
-        std::lock_guard lock(shader_lock_);
-        w.vs_check = shaders_[k.vs].check;
-        w.ps_check = shaders_[k.ps].check;
-    }
-    cache::AddPipelineKey(&w, sizeof(w));
-}
-
-// every start is a new process: the pipelines drawn in earlier runs are built on the build threads now, so their
-// first draw finds them made instead of loading or compiling them on the render thread
-void D3D12Backend::WarmPipelines() {
-    std::vector<std::vector<uint8_t>> keys = cache::TakePipelineKeys();
-    for (const auto& bytes : keys) {
-        if (bytes.size() != sizeof(WarmKey)) continue;
-        WarmKey w;
-        std::memcpy(&w, bytes.data(), sizeof(w));
-        cache::Post([this, w] {
-            ComPtr<ID3DBlob> vs = cache::FindShader(w.key.vs, w.vs_check);
-            ComPtr<ID3DBlob> ps = cache::FindShader(w.key.ps, w.ps_check);
-            if (!vs || !ps) return;
-            uint64_t h = Hash(&w.key, sizeof(w.key));
-            bool unused = false;
-            ComPtr<ID3D12PipelineState> pso = CreatePipeline(w.key, h, vs.Get(), ps.Get(), true, unused);
-            if (pso) DeliverBuilt(h, std::move(pso));
-        });
-    }
-    LOGI("d3d12: %zu pipelines from earlier runs being built", keys.size());
-}
-
 void D3D12Backend::TakeBuilt() {
     std::lock_guard lock(built_lock_);
     built_ready_ = false;
@@ -2643,19 +2533,18 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, bool wait) {
     if (pending) {
         building_.insert(h);
         skipped_frame_ = true;
-        // ahead of the warm up: this one is missing from the frame now
         cache::Post([this, k, h] {
             bool unused = false;
             ID3DBlob* vs = EnsureShaderCode(k.vs, true, unused);
             ID3DBlob* ps = EnsureShaderCode(k.ps, true, unused);
             ComPtr<ID3D12PipelineState> pso;
             if (vs && ps) pso = CreatePipeline(k, h, vs, ps, true, unused);
-            if (pso) RememberPipeline(k);
-            DeliverBuilt(h, std::move(pso));
-        }, true);
+            std::lock_guard lock(built_lock_);
+            built_.emplace_back(h, std::move(pso));
+            built_ready_.store(true, std::memory_order_release);
+        });
         return nullptr;
     }
-    if (pso) RememberPipeline(k);
     return (psos_[h] = std::move(pso)).Get();
 }
 
@@ -2724,28 +2613,6 @@ void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
     d.SampleDesc.Count = std::max(k.msaa, 1u);
 }
 
-// the pipeline library's name for d, kept by the caller under key
-uint64_t PipelineName(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, uint64_t key) {
-    // the bytecode's own checksum: another compiler's output for the same source is another pipeline
-    auto sum = [](const D3D12_SHADER_BYTECODE& b) {
-        return Hash(static_cast<const uint8_t*>(b.pShaderBytecode) + 4, 16);
-    };
-    return Hash(&key, sizeof(key), sum(d.VS) ^ sum(d.PS) * 3);
-}
-
-// from the library, else from the driver (any thread)
-ComPtr<ID3D12PipelineState> D3D12Backend::BuildPipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, uint64_t key) {
-    uint64_t name = PipelineName(d, key);
-    ComPtr<ID3D12PipelineState> pso = cache::LoadPipeline(name, d);
-    if (pso) return pso;
-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) {
-        LOGE("d3d12: pipeline creation failed");
-        return nullptr;
-    }
-    cache::StorePipeline(name, pso.Get());
-    return pso;
-}
-
 // from the library, else from the driver when compile is set (any thread)
 ComPtr<ID3D12PipelineState> D3D12Backend::CreatePipeline(const PsoKey& k, uint64_t h, ID3DBlob* vs, ID3DBlob* ps,
                                                          bool compile, bool& pending) {
@@ -2754,9 +2621,22 @@ ComPtr<ID3D12PipelineState> D3D12Backend::CreatePipeline(const PsoKey& k, uint64
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
     d.InputLayout = {el, n};
     FillPipelineDesc(k, vs, ps, d);
-    if (compile) return BuildPipeline(d, h);
-    ComPtr<ID3D12PipelineState> pso = cache::LoadPipeline(PipelineName(d, h), d);
-    if (!pso) pending = true;
+    // the bytecode's own checksum: another compiler's output for the same source is another pipeline
+    auto sum = [](ID3DBlob* b) { return Hash(static_cast<const uint8_t*>(b->GetBufferPointer()) + 4, 16); };
+    uint64_t name = Hash(&h, sizeof(h), sum(vs) ^ sum(ps) * 3);
+    ComPtr<ID3D12PipelineState> pso = cache::LoadPipeline(name, d);
+    if (pso) {
+        return pso;
+    }
+    if (!compile) {
+        pending = true;
+        return nullptr;
+    }
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) {
+        LOGE("d3d12: pipeline creation failed");
+        return nullptr;
+    }
+    cache::StorePipeline(name, pso.Get());
     return pso;
 }
 
@@ -2927,67 +2807,12 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(int stage, const TextureDesc& d, 
         if (sig != tx.sig || !same) {
             tx.sig = sig;
             UploadTexture(tx, d, fi, p, same);
-            tx.pack_gen = 0;
         }
     }
-    if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi);
-    if (tx.pack_key) LatchPackImage(tx);
-    const Tex& drawn = tx.swap ? *tx.swap : tx;
-    FillTextureView(drawn, d, stages.sv[stage]);
+    FillTextureView(tx, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     if (tx.norm && d.cube && hdr_) info.flags |= kTexNormCube;
-    return drawn.res.Get();
-}
-
-// after new bytes or a texture setting change: the name the pack and the dumps know the bytes by
-void D3D12Backend::LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo& fi) {
-    const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
-    tx.pack_gen = texturedumper::Generation();
-    tx.swap = nullptr;
-    uint64_t key = texturedumper::Key(d, fi, p, nullptr);
-    texturedumper::Dump(key, d, p, nullptr);
-    // dumping alone keys the bytes too: the pack image is not drawn then
-    tx.pack_key = texturedumper::Replacing() ? key : 0;
-}
-
-// the pack image for tx's bytes once it has loaded; textures with the same bytes share its GPU copy
-void D3D12Backend::LatchPackImage(Tex& tx) {
-    auto it = pack_textures_.find(tx.pack_key);
-    if (it == pack_textures_.end()) {
-        texturedumper::Image img;
-        texturedumper::Lookup got = texturedumper::Take(tx.pack_key, img);
-        if (got == texturedumper::Lookup::Loading) return;
-        if (got == texturedumper::Lookup::None) {
-            tx.pack_key = 0;
-            return;
-        }
-        it = pack_textures_.emplace(tx.pack_key, Tex{}).first;
-        CreatePackTexture(it->second, img);
-    }
-    if (it->second.res) tx.swap = &it->second;
-    tx.pack_key = 0;
-}
-
-void D3D12Backend::CreatePackTexture(Tex& r, const texturedumper::Image& img) {
-    r.fmt = img.format;
-    r.levels = uint32_t(img.levels.size());
-    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
-    D3D12_RESOURCE_DESC td{};
-    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width = img.width;
-    td.Height = img.height;
-    td.DepthOrArraySize = 1;
-    td.MipLevels = UINT16(r.levels);
-    td.Format = r.fmt;
-    td.SampleDesc.Count = 1;
-    if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                             IID_PPV_ARGS(&r.res)))) {
-        LOGE("texture pack: a %ux%u image could not be made", img.width, img.height);
-        return;
-    }
-    for (uint32_t l = 0; l < r.levels; l++) UploadTextureLevel(r, 0, l, img.levels[l].px, img.levels[l].pitch);
-    D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COPY_DEST;
-    Transition(r.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    return tx.res.Get();
 }
 
 ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTextures& stages) {
@@ -4042,34 +3867,6 @@ ID3D12Resource* D3D12Backend::PrepareShownFrame(Target* t) {
     return r;
 }
 
-// Colour blind modes: Machado 2009 simulation at full severity, then Fidaner's daltonize, which moves the difference
-// the eye loses into channels it still sees. Rows of protanopia, deuteranopia, tritanopia.
-constexpr float kColourBlindSimulate[3][9] = {
-    {0.152286f, 1.052583f, -0.204868f, 0.114503f, 0.786281f, 0.099216f, -0.003882f, -0.048116f, 1.051998f},
-    {0.367322f, 0.860646f, -0.227968f, 0.280085f, 0.672501f, 0.047413f, -0.011820f, 0.042940f, 0.968881f},
-    {1.255528f, -0.076749f, -0.178779f, -0.078411f, 0.930809f, 0.147602f, 0.004733f, 0.691367f, 0.303900f},
-};
-constexpr float kColourBlindShift[3][9] = {
-    {0, 0, 0, 0.7f, 1, 0, 0.7f, 0, 1},
-    {0, 0, 0, 0.7f, 1, 0, 0.7f, 0, 1},
-    {1, 0, 0.7f, 0, 1, 0.7f, 0, 0, 0},
-};
-
-// mode 1 to 3: identity + shift * (identity - simulate)
-std::array<float, 9> ColourBlindMatrix(uint32_t mode) {
-    const float* sim = kColourBlindSimulate[mode - 1];
-    const float* shift = kColourBlindShift[mode - 1];
-    std::array<float, 9> m{};
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) {
-            float lost = 0;
-            for (int k = 0; k < 3; k++) lost += shift[r * 3 + k] * (float(k == c) - sim[k * 3 + c]);
-            m[r * 3 + c] = float(r == c) + lost;
-        }
-    }
-    return m;
-}
-
 void D3D12Backend::BlitFrame(const Target& t, ID3D12Resource* r, bool pillarbox, DXGI_FORMAT rtv) {
     float aspect = app::Aspect();
     float w = float(bb_w_);
@@ -4082,9 +3879,7 @@ void D3D12Backend::BlitFrame(const Target& t, ID3D12Resource* r, bool pillarbox,
     D3D12_RECT scissor{0, 0, LONG(bb_w_), LONG(bb_h_)};
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
-    uint32_t mode = app::Get().colour_blind;
-    std::array<float, 9> colour = mode ? ColourBlindMatrix(mode) : std::array<float, 9>{};
-    if (r) Blit(r, t.fmt, uv, {.gamma = gamma_, .rtv = rtv, .colour = mode ? colour.data() : nullptr});
+    if (r) Blit(r, t.fmt, uv, {.gamma = gamma_, .rtv = rtv});
 }
 
 void D3D12Backend::RenderUi() {
@@ -4522,3 +4317,4 @@ void D3D12Backend::SetGamma(const uint8_t*) {}
 std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
 
 }  // namespace gpu
+#endif

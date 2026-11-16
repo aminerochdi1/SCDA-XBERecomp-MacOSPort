@@ -2,6 +2,10 @@
 // top-left pixel on the pointer. Its visible part is sized, not the image, so padding and resolution don't matter: the
 // longer side is 17 units of the 480 line page, the arrow in Chaos Theory PC's 32x32 Cursor.dds drawn 32 units, and
 // the size Double Agent PC drew its 64x64 one at. Without a file the system arrow stays.
+#include "app/app.h"
+#include "core/log.h"
+
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -16,13 +20,12 @@
 #include <cmath>
 #include <vector>
 
-#include "app/app.h"
-#include "core/log.h"
-
 using Microsoft::WRL::ComPtr;
+#endif
 
 namespace app {
 
+#ifdef _WIN32
 namespace {
 
 constexpr float kPageHeight = 480.0f, kVisibleSize = 17.0f;
@@ -122,8 +125,10 @@ HCURSOR Build(int frame_height) {
 }
 
 }  // namespace
+#endif
 
 void* MenuCursor() {
+#ifdef _WIN32
     static HCURSOR arrow = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
     if (!g_read) ReadCursorFile();
     RECT r;
@@ -143,6 +148,9 @@ void* MenuCursor() {
         g_height = frame_height;
     }
     return g_cursor;
+#else
+    return nullptr;
+#endif
 }
 
 }  // namespace app

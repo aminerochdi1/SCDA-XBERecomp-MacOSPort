@@ -326,6 +326,19 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     }
     std::error_code ec;
     bool exists = fs::exists(host, ec);
+    if (!exists && (disposition == 1 || disposition == 3)) {
+        std::string up = Upper(Normalize(name));
+        std::string subpath;
+        if (up.rfind("\\??\\Z:\\", 0) == 0) subpath = up.substr(7);
+        else if (up.rfind("Z:\\", 0) == 0) subpath = up.substr(3);
+        else if (up.rfind("\\DEVICE\\HARDDISK0\\PARTITION5\\", 0) == 0) subpath = up.substr(29);
+        if (!subpath.empty()) {
+            Target dt = Resolve("D:\\" + subpath, 0);
+            if (dt.disc && dt.entry) {
+                return OpenOnDisc(dt.entry, name, handle_out, iosb, disposition, options);
+            }
+        }
+    }
     bool is_dir = exists && fs::is_directory(host, ec);
     bool want_dir = options & 1;
     uint32_t info = 1;  // FILE_OPENED
@@ -395,9 +408,15 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     FILE* fp = std::fopen(host.c_str(), mode);
     if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
     if (!fp) {
-        LOGW("NtCreateFile: cannot open %s", host.c_str());
-        IoStatus(iosb, kAccessDenied, 0);
-        return kAccessDenied;
+        int err = errno;
+        LOGW("NtCreateFile: cannot open %s (errno %d: %s, mode %s, disp %u)", host.c_str(), err, std::strerror(err), mode ? mode : "", disposition);
+        uint32_t status = kAccessDenied;
+        if (err == ENOENT) status = kObjectNameNotFound;
+        else if (err == ENOTDIR) status = kObjectPathNotFound;
+        else if (err == EMFILE || err == ENFILE) status = kTooManyOpenedFiles;
+        else if (err == EEXIST) status = kObjectNameCollision;
+        IoStatus(iosb, status, 0);
+        return status;
     }
     auto f = std::make_shared<File>();
     f->host = host;
@@ -420,6 +439,17 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     std::string host = t.host;
     std::error_code ec;
     if (host.empty() || !fs::exists(host, ec)) {
+        std::string up = Upper(Normalize(name));
+        std::string subpath;
+        if (up.rfind("\\??\\Z:\\", 0) == 0) subpath = up.substr(7);
+        else if (up.rfind("Z:\\", 0) == 0) subpath = up.substr(3);
+        else if (up.rfind("\\DEVICE\\HARDDISK0\\PARTITION5\\", 0) == 0) subpath = up.substr(29);
+        if (!subpath.empty()) {
+            Target dt = Resolve("D:\\" + subpath, 0);
+            if (dt.disc && dt.entry) {
+                return OpenOnDisc(dt.entry, name, handle_out, iosb, 1, options);
+            }
+        }
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
         return host.empty() ? kObjectPathNotFound : kObjectNameNotFound;
@@ -431,7 +461,16 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     if (!f->dir) {
         f->fp = std::fopen(host.c_str(), "r+b");
         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
-        if (!f->fp) return kAccessDenied;
+        if (!f->fp) {
+            int err = errno;
+            LOGW("NtOpenFile: cannot open %s (errno %d: %s)", host.c_str(), err, std::strerror(err));
+            uint32_t status = kAccessDenied;
+            if (err == ENOENT) status = kObjectNameNotFound;
+            else if (err == ENOTDIR) status = kObjectPathNotFound;
+            else if (err == EMFILE || err == ENFILE) status = kTooManyOpenedFiles;
+            IoStatus(iosb, status, 0);
+            return status;
+        }
     }
     (void)options;
     W32(handle_out, NewHandle(f));

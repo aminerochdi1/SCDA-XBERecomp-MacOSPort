@@ -1,4 +1,5 @@
 // scda.toml beside the exe
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -6,13 +7,15 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <SDL3/SDL.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
-#include <iterator>
 #include <sstream>
 #include <utility>
 
@@ -47,27 +50,6 @@ Port ParsePort(const std::string& name, Port fallback) {
 
 std::filesystem::path File() { return ExeDir() / "scda.toml"; }
 
-// the Windows display language when the game has it, else English
-std::string SystemLanguage() {
-    switch (PRIMARYLANGID(GetUserDefaultUILanguage())) {
-        case LANG_FRENCH: return "fra";
-        case LANG_GERMAN: return "deu";
-        case LANG_ITALIAN: return "ita";
-        case LANG_SPANISH: return "esp";
-        default: return "int";
-    }
-}
-
-void LoadGyro(const toml::table& t, gyro::Settings& g) {
-    g.enabled = t["gyro_aiming"].value_or(g.enabled);
-    g.sensitivity = float(t["gyro_sensitivity"].value_or(double(g.sensitivity)));
-    g.axis = std::min<uint32_t>(t["gyro_axis"].value_or(g.axis), gyro::kWorld);
-    uint32_t last_button = uint32_t(std::size(gyro::kButtonNames) - 1);
-    g.button = std::min(t["gyro_button"].value_or(g.button), last_button);
-    g.button_mode = std::min<uint32_t>(t["gyro_button_mode"].value_or(g.button_mode), gyro::kToggle);
-    g.recenter_button = std::min(t["gyro_recenter_button"].value_or(g.recenter_button), last_button);
-}
-
 }  // namespace
 
 Settings& Get() {
@@ -95,8 +77,6 @@ void Load() {
     s.brightness = std::min(t["brightness"].value_or(s.brightness), 100u);
     s.contrast = std::min(t["contrast"].value_or(s.contrast), 100u);
     s.fps_counter = t["fps_counter"].value_or(s.fps_counter);
-    s.fmv_scale = std::min(t["fmv_scale"].value_or(s.fmv_scale), 1u);
-    s.colour_blind = std::min(t["colour_blind"].value_or(s.colour_blind), 3u);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.hdr_output = t["hdr_output"].value_or(s.hdr_output);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
@@ -106,7 +86,8 @@ void Load() {
     // 0 was the old UNLIMITED, now the furthest
     uint32_t shadow_distance = t["shadow_distance"].value_or(s.shadow_distance);
     s.shadow_distance = shadow_distance ? std::min(shadow_distance, 8u) : 8u;
-    s.shadow_filter = t["shadow_filter"].value_or(s.shadow_filter) >= 3 ? 3u : 1u;
+    s.shadow_filter = t["shadow_filter"].value_or(s.shadow_filter);
+    if (s.shadow_filter >= 3) s.shadow_filter = 3u;
     s.shader_model = t["shader_model"].value_or(s.shader_model) >= 3 ? 3u : 1u;
     s.hdr_rendering = t["hdr_rendering"].value_or(s.hdr_rendering);
     s.tone_mapping = t["tone_mapping"].value_or(s.tone_mapping);
@@ -114,36 +95,11 @@ void Load() {
     if (auto on = t["ambient_occlusion"].value<bool>()) s.ambient_occlusion = *on;
     s.ambient_occlusion = std::min(t["ambient_occlusion"].value_or(s.ambient_occlusion), 2u);
     s.async_shaders = t["async_shaders"].value_or(s.async_shaders);
-    s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
-    s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
-    s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
     s.mouse_sensitivity = float(t["mouse_sensitivity"].value_or(double(s.mouse_sensitivity)));
-    // absent in files from before the split: the one sensitivity they had
-    s.mouse_vertical_sensitivity = float(t["mouse_vertical_sensitivity"].value_or(double(s.mouse_sensitivity)));
     s.invert_mouse = t["invert_mouse"].value_or(s.invert_mouse);
-    s.invert_mouse_x = t["invert_mouse_x"].value_or(s.invert_mouse_x);
-    s.invert_pad_x = t["invert_pad_x"].value_or(s.invert_pad_x);
-    s.invert_pad_y = t["invert_pad_y"].value_or(s.invert_pad_y);
-    float zone = float(t["pad_dead_zone"].value_or(double(s.pad_dead_zone)));
-    s.pad_dead_zone = zone > 0.0f ? std::clamp(zone, 0.1f, 1.0f) : 0.0f;
-    s.pad_horizontal_sensitivity = float(t["pad_horizontal_sensitivity"].value_or(double(s.pad_horizontal_sensitivity)));
-    s.pad_vertical_sensitivity = float(t["pad_vertical_sensitivity"].value_or(double(s.pad_vertical_sensitivity)));
-    s.pad_aim_horizontal_sensitivity =
-        float(t["pad_aim_horizontal_sensitivity"].value_or(double(s.pad_aim_horizontal_sensitivity)));
-    s.pad_aim_vertical_sensitivity =
-        float(t["pad_aim_vertical_sensitivity"].value_or(double(s.pad_aim_vertical_sensitivity)));
-    s.vibration_strength = std::min(t["vibration_strength"].value_or(s.vibration_strength), 200u);
-    LoadGyro(t, s.gyro);
-    s.free_look_sensitivity = float(t["free_look_sensitivity"].value_or(double(s.free_look_sensitivity)));
-    s.weapon_sensitivity = float(t["weapon_sensitivity"].value_or(double(s.weapon_sensitivity)));
-    s.sniper_sensitivity = float(t["sniper_sensitivity"].value_or(double(s.sniper_sensitivity)));
-    s.aim_horizontal_sensitivity = float(t["aim_horizontal_sensitivity"].value_or(double(s.aim_horizontal_sensitivity)));
-    s.aim_vertical_sensitivity = float(t["aim_vertical_sensitivity"].value_or(double(s.aim_vertical_sensitivity)));
     s.skip_intros = t["skip_intros"].value_or(s.skip_intros);
-    s.pause_on_focus_loss = t["pause_on_focus_loss"].value_or(s.pause_on_focus_loss);
     std::string language = t["language"].value_or(s.language);
-    bool known = std::find(std::begin(kLanguages), std::end(kLanguages), language) != std::end(kLanguages);
-    if (known || language == "auto") s.language = language;
+    if (std::find(std::begin(kLanguages), std::end(kLanguages), language) != std::end(kLanguages)) s.language = language;
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
     audio::SetOutputMode(s.audio_output);
     s.coop_tick_rate = t["coop_tick_rate"].value_or(s.coop_tick_rate);
@@ -182,8 +138,6 @@ toml::table Table() {
                   {"brightness", int64_t(s.brightness)},
                   {"contrast", int64_t(s.contrast)},
                   {"fps_counter", s.fps_counter},
-                  {"fmv_scale", int64_t(s.fmv_scale)},
-                  {"colour_blind", int64_t(s.colour_blind)},
                   {"vsync", s.vsync},
                   {"hdr_output", s.hdr_output},
                   {"anisotropic_filtering", int64_t(s.aniso)},
@@ -197,34 +151,9 @@ toml::table Table() {
                   {"tone_mapping", s.tone_mapping},
                   {"ambient_occlusion", int64_t(s.ambient_occlusion)},
                   {"async_shaders", s.async_shaders},
-                  {"custom_textures", s.custom_textures},
-                  {"dump_textures", s.dump_textures},
-                  {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"mouse_sensitivity", double(s.mouse_sensitivity)},
-                  {"mouse_vertical_sensitivity", double(s.mouse_vertical_sensitivity)},
                   {"invert_mouse", s.invert_mouse},
-                  {"invert_mouse_x", s.invert_mouse_x},
-                  {"invert_pad_x", s.invert_pad_x},
-                  {"invert_pad_y", s.invert_pad_y},
-                  {"pad_dead_zone", double(s.pad_dead_zone)},
-                  {"pad_horizontal_sensitivity", double(s.pad_horizontal_sensitivity)},
-                  {"pad_vertical_sensitivity", double(s.pad_vertical_sensitivity)},
-                  {"pad_aim_horizontal_sensitivity", double(s.pad_aim_horizontal_sensitivity)},
-                  {"pad_aim_vertical_sensitivity", double(s.pad_aim_vertical_sensitivity)},
-                  {"vibration_strength", int64_t(s.vibration_strength)},
-                  {"gyro_aiming", s.gyro.enabled},
-                  {"gyro_sensitivity", double(s.gyro.sensitivity)},
-                  {"gyro_axis", int64_t(s.gyro.axis)},
-                  {"gyro_button", int64_t(s.gyro.button)},
-                  {"gyro_button_mode", int64_t(s.gyro.button_mode)},
-                  {"gyro_recenter_button", int64_t(s.gyro.recenter_button)},
-                  {"free_look_sensitivity", double(s.free_look_sensitivity)},
-                  {"weapon_sensitivity", double(s.weapon_sensitivity)},
-                  {"sniper_sensitivity", double(s.sniper_sensitivity)},
-                  {"aim_horizontal_sensitivity", double(s.aim_horizontal_sensitivity)},
-                  {"aim_vertical_sensitivity", double(s.aim_vertical_sensitivity)},
                   {"skip_intros", s.skip_intros},
-                  {"pause_on_focus_loss", s.pause_on_focus_loss},
                   {"language", s.language},
                   {"audio_output", int64_t(s.audio_output)},
                   {"coop_tick_rate", int64_t(s.coop_tick_rate)},
@@ -259,14 +188,13 @@ void LogSettings() {
         if (!line.empty()) LOGR("  %s", line.c_str());
 }
 
-std::string ResolveLanguage(const std::string& setting) { return setting == "auto" ? SystemLanguage() : setting; }
-
 const std::string& BootLanguage() {
-    static const std::string language = ResolveLanguage(Get().language);
+    static const std::string language = Get().language;
     return language;
 }
 
 Mode Desktop() {
+#ifdef _WIN32
     HMONITOR mon = MonitorFromWindow(static_cast<HWND>(Window()), MONITOR_DEFAULTTOPRIMARY);
     MONITORINFOEXW mi{};
     mi.cbSize = sizeof(mi);
@@ -275,9 +203,19 @@ Mode Desktop() {
     if (GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_REGISTRY_SETTINGS, &dm))
         return {dm.dmPelsWidth, dm.dmPelsHeight};
     return {uint32_t(GetSystemMetrics(SM_CXSCREEN)), uint32_t(GetSystemMetrics(SM_CYSCREEN))};
+#else
+    int count = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&count);
+    if (displays && count > 0) {
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(displays[0]);
+        if (dm) return {uint32_t(dm->w), uint32_t(dm->h)};
+    }
+    return {1920, 1080};
+#endif
 }
 
 std::vector<Display> Displays() {
+#ifdef _WIN32
     std::vector<Display> out;
     auto add = [](HMONITOR mon, HDC, LPRECT, LPARAM list) -> BOOL {
         MONITORINFOEXW mi{};
@@ -295,9 +233,22 @@ std::vector<Display> Displays() {
     EnumDisplayMonitors(nullptr, nullptr, add, LPARAM(&out));
     std::sort(out.begin(), out.end(), [](const Display& a, const Display& b) { return a.number < b.number; });
     return out;
+#else
+    std::vector<Display> out;
+    int count = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&count);
+    for (int i = 0; i < count; i++) {
+        const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(displays[i]);
+        if (!dm) continue;
+        const char* name = SDL_GetDisplayName(displays[i]);
+        out.push_back({name ? name : "Display " + std::to_string(i), i, {uint32_t(dm->w), uint32_t(dm->h)}, i == 0});
+    }
+    return out;
+#endif
 }
 
 void* MonitorHandle(const std::string& device) {
+#ifdef _WIN32
     struct Find {
         std::wstring device;
         HMONITOR found;
@@ -311,6 +262,9 @@ void* MonitorHandle(const std::string& device) {
     };
     if (!device.empty()) EnumDisplayMonitors(nullptr, nullptr, match, LPARAM(&find));
     return find.found ? find.found : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+#else
+    return nullptr;
+#endif
 }
 
 Mode Output() {

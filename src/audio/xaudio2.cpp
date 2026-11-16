@@ -1,4 +1,5 @@
 // mixer output through XAudio2
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -22,9 +23,7 @@ namespace audio {
 
 namespace {
 
-// the console's stereo downmix in the DOLBY image: centre and back pair at -3 dB, no sub
 constexpr float kCentreFold = 0.707f;
-constexpr float kBackFold = 0.707f;
 constexpr DWORD kFront = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY;
 constexpr DWORD kBack = SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
 constexpr DWORD kSide = SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
@@ -36,7 +35,6 @@ std::atomic<bool> g_surround{false};
 std::atomic<bool> g_mono{false};
 std::atomic<uint32_t> g_mode{kOutputAuto};
 std::atomic<bool> g_mode_changed{false};
-std::atomic<bool> g_paused{false};
 
 struct Output {
     IXAudio2* xa = nullptr;
@@ -96,11 +94,11 @@ std::vector<float> SurroundMatrix(DWORD mask, uint32_t outputs) {
     return m;
 }
 
-// L = FL + kCentreFold C + kBackFold BL and R = FR + kCentreFold C + kBackFold BR without the sub, on the first two
-// outputs. Mono, or a mono master, hears the average of the two, as the console's mono downmix.
+// L = FL + kCentreFold C + BL and R = FR + kCentreFold C + BR without the sub, on the first two outputs.
+// Mono, or a mono master, hears the average of the two.
 std::vector<float> FoldToStereo(uint32_t outputs, bool mono) {
-    static const float kLeft[kChannels] = {1, 0, kCentreFold, 0, kBackFold, 0};
-    static const float kRight[kChannels] = {0, 1, kCentreFold, 0, 0, kBackFold};
+    static const float kLeft[kChannels] = {1, 0, kCentreFold, 0, 1, 0};
+    static const float kRight[kChannels] = {0, 1, kCentreFold, 0, 0, 1};
     std::vector<float> m(outputs * kChannels, 0.0f);
     bool average = mono || outputs == 1;
     for (uint32_t s = 0; s < kChannels; s++) {
@@ -161,32 +159,13 @@ std::optional<Output> Open() {
 void Pump(Output& out, const std::function<void(float*, uint32_t)>& render) {
     out.voice->Start();
     constexpr uint32_t kFrames = kRate / 100;
-    constexpr uint32_t kMinQueued = 3;
-    constexpr uint32_t kMaxQueued = 10;
-    // one slot more than can be queued, so the one rendered is never one XAudio2 still reads
-    constexpr uint32_t kSlots = kMaxQueued + 1;
+    constexpr uint32_t kSlots = 4;
     std::vector<float> bufs(kSlots * kFrames * kChannels);
-    uint32_t depth = kMinQueued;
-    bool stopped = false;
     for (uint32_t n = 0;;) {
         if (g_mode_changed.exchange(false)) ApplyMatrix(out);
-        if (g_paused != stopped) {
-            stopped = !stopped;
-            if (stopped) out.voice->Stop();
-            else out.voice->Start();
-        }
-        if (stopped) {
-            Sleep(10);
-            continue;
-        }
         XAUDIO2_VOICE_STATE st;
         out.voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        // a starved voice crackles: queue one buffer more each time, up to kMaxQueued
-        if (n && !st.BuffersQueued && depth < kMaxQueued) {
-            depth++;
-            LOGI("audio: output starved, queueing %u ms", depth * 10);
-        }
-        if (st.BuffersQueued >= depth) {
+        if (st.BuffersQueued >= 3) {
             Sleep(2);
             continue;
         }
@@ -210,8 +189,6 @@ void SetOutputMode(uint32_t mode) {
     if (g_mode.exchange(mode) != mode) g_mode_changed = true;
 }
 
-void SetPaused(bool paused) { g_paused = paused; }
-
 void StartOutput(std::function<void(float*, uint32_t)> render) {
     std::promise<void> opened;
     std::future<void> known = opened.get_future();
@@ -229,3 +206,4 @@ void StartOutput(std::function<void(float*, uint32_t)> render) {
 }
 
 }  // namespace audio
+#endif  // _WIN32

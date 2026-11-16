@@ -1,5 +1,6 @@
 // The game in assets: its files, or a disc image (.iso) with this executable's xbe on it. The xbe must be the one
 // this executable was recompiled from; another release's would run its own data under this code.
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -7,6 +8,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <SDL3/SDL.h>
+#endif
 
 #include <algorithm>
 #include <cwctype>
@@ -26,7 +30,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr wchar_t kTitle[] = L"Splinter Cell: Double Agent";
+constexpr wchar_t kTitle[] = L"Splinter Cell Double Agent";
 
 // assets beside the exe or in any folder above it (the build output)
 fs::path FindAssets() {
@@ -39,15 +43,6 @@ fs::path FindAssets() {
     }
     return {};
 }
-
-bool ReadHostFile(const fs::path& path, std::vector<uint8_t>& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    out.assign(std::istreambuf_iterator<char>(f), {});
-    return true;
-}
-
-}  // namespace
 
 std::string Sha1(const std::vector<uint8_t>& data) {
     alignas(8) uint8_t ctx[128];
@@ -62,6 +57,15 @@ std::string Sha1(const std::vector<uint8_t>& data) {
     }
     return hex;
 }
+
+bool ReadHostFile(const fs::path& path, std::vector<uint8_t>& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    out.assign(std::istreambuf_iterator<char>(f), {});
+    return true;
+}
+
+}  // namespace
 
 bool FindGame(GameFiles& game) {
     fs::path assets = FindAssets();
@@ -97,7 +101,8 @@ bool FindGame(GameFiles& game) {
     };
 
     std::vector<uint8_t> xbe;
-    if (!assets.empty() && ReadHostFile(assets / IMAGE_XBE, xbe) && consider(assets, std::move(xbe), nullptr)) return true;
+    bool has_folders = fs::is_directory(assets / "Default", ec) || fs::is_directory(assets / "default", ec) || fs::is_directory(assets / "adv", ec);
+    if (!assets.empty() && has_folders && ReadHostFile(assets / IMAGE_XBE, xbe) && consider(assets, std::move(xbe), nullptr)) return true;
     for (const fs::path& iso : isos) {
         auto disc = std::make_unique<kernel::Disc>();
         std::string error;
@@ -113,10 +118,16 @@ bool FindGame(GameFiles& game) {
     }
 
     if (other_name.empty()) {
+#ifdef _WIN32
         MessageBoxW(nullptr,
                     L"Put the game in the assets folder: its disc image (.iso), or the disc's files (default.xbe and "
                     L"sc4_adv.xbe with the Default, Media and adv folders beside them).",
                     kTitle, MB_ICONERROR);
+#else
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Splinter Cell Double Agent",
+                                 "Put the game in the assets folder: its disc image (.iso), or the disc's files (default.xbe and sc4_adv.xbe with the Default, Media and adv folders beside them).",
+                                 nullptr);
+#endif
         return false;
     }
     // only one release is known in NA/EU, so a mismatch is almost always a harmless dump difference

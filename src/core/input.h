@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+union SDL_Event;
+
 namespace input {
 
 // the console controller's report, analog buttons are 0-255
@@ -14,8 +16,10 @@ struct Pad {
 };
 
 void Init(void* hwnd);
-void StartControllers();  // Init starts them too; the game code window reads them before it
-uint16_t HeldOnAnyController();  // XINPUT_GAMEPAD masks of every controller, binds left out
+void HandleGamepadAdded(uint32_t id);
+void HandleGamepadRemoved(uint32_t id);
+void ProcessEvent(const SDL_Event& event);
+bool Active();
 // Ports 0 and 1 have what F10 > PLAYER 1 / PLAYER 2 plugs in; 2 and 3 are empty. The keyboard and mouse buttons
 // merge into the pad of the port they share, which is connected as long as the keyboard is on it.
 Pad Poll(int port);
@@ -83,30 +87,17 @@ uint32_t StickKeys();
 // keys the game side acts on itself, once per press in play
 enum class KeyEvent {
     None, Whistle, SidekickCommand, QuickSave, QuickLoad, Reload, PushToTalk, HideHud, SettingsPanel, DropBody, ZoomIn,
-    ZoomOut, ToggleTextures
+    ZoomOut
 };
 // A synced co-op session. Its lockstep carries the pad, not what the game side calls on its own, so there the
 // sidekick key holds the black button (co-op action) and whistle is off.
 void SetNetSession(bool net);
 bool NetSession();
-// the training video page: its prompts wait for pad actions by name
-void SetTrainingVideo(bool on);
 // aiming with nothing to interact with, where the pad's A reloads: the keyboard's interact key leaves A alone, the
 // reload key reloads (in a synced session it holds A, as the pad would)
 void SetInteractReloads(bool on);
 // aiming, the EEV, a scope: the slowest walking speed stays past m_gentleForce, the least these move at
 void SetTargeting(bool on);
-// aiming a weapon or through the sniper scope: the mouse takes the aim sensitivities
-void SetAiming(bool on);
-bool Aiming();
-// the controller's look sensitivities, horizontal and vertical, with the aim ones when aiming
-struct LookScale {
-    float x;
-    float y;
-};
-LookScale PadLookScale(bool aiming);
-// the stick axis dead zone the game applies itself
-float GameDeadZone();
 // carrying a body: the keyboard's alt fire drops it (DropBody), as SCCT PC's s_Carry ProcessAltFire, not the pad's LT
 void SetCarrying(bool on);
 // hanging from a ledge (s_Ledge): the move backward key, with no strafe key held, holds B (crouch) and drops, as SCCT PC
@@ -139,7 +130,6 @@ uint32_t Clicks();
 bool Pressing();
 
 // actions the keyboard and mouse can be bound to, key names comma separated
-// letter, digit and symbol keys bind by position as the US key there; Binding shows the player's labels
 struct Action {
     const char* id;
     const char* label;

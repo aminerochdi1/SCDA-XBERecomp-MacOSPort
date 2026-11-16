@@ -1,13 +1,13 @@
-// RECOMP SETTINGS, MOUSE AND KEYBOARD and CONTROLLER under VOICE in the versus Options page. Each lists its sections
-// (as story's) on P_Options' own rows; a section opens a page of the F10 panel's rows in P_Options_Game's frame. Magma
-// 5.0 loads its packages from XML text, so what the stock packages lack is spliced into that text before it is parsed
-// and the game builds it like its own: the three buttons (copies of the last one, Online, shown as VOICE, a row lower
-// each, in the up / down loop between it and Game) and the two pages in Options, the rows page's row (the option rows'
-// CHK_Default as a button: its bar and label, and a value on the right) in common, and the popup listing a row's values
-// (a copy of P_TeamsActionPopup, on that package's own B_OptionItem rows, at the place of the map list's popup) in
-// xboxlive. Labels and titles come through the text lookup (xbox_live.cpp) or are set when a page opens. As story's
-// options menu: A flips an on / off row, opens the popup on a row with a list and steps the others, Left / Right step
-// those.
+// RECOMP SETTINGS, MOUSE AND KEYBOARD and CONTROLLER under VOICE in the versus Options page. RECOMP SETTINGS lists
+// its sections (as story's: General, Display, Graphics) on P_Options' own rows; a section, MOUSE AND KEYBOARD and
+// CONTROLLER open a page of the F10 panel's rows in P_Options_Game's frame. Magma 5.0 loads its packages from XML
+// text, so what the stock packages lack is spliced into that text before it is parsed and the game builds it like
+// its own: the three buttons (copies of the last one, Online, shown as VOICE, a row lower each, in the up / down loop
+// between it and Game) and the two pages in Options, the rows page's row (the option rows' CHK_Default as a button:
+// its bar and label, and a value on the right) in common, and the popup listing a row's values (a copy of
+// P_TeamsActionPopup, on that package's own B_OptionItem rows, at the place of the map list's popup) in xboxlive.
+// Labels and titles come through the text lookup (xbox_live.cpp) or are set when a page opens. As story's options
+// menu: A flips an on / off row, opens the popup on a row with a list and steps the others, Left / Right step those.
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -124,18 +124,14 @@ constexpr std::string_view kItem = "B_RecompItem";
 constexpr List kRowList{"Options", "P_Options_Recomp", "RecompList", kItem, "50 176", 10};
 constexpr int kRowListY = 176;
 constexpr int kRowHeight = 21;
-// a section's few rows sit in the middle of the frame under the title (y 84 to 405), a long one under the title
+// a RECOMP SETTINGS section's few rows sit in the middle of the frame under the title (y 84 to 405)
 constexpr int kFrameMiddle = 245;
 // the popup over the rows: P_TeamsActionPopup's list at the map list popup's place (P_createMatchParamsPopup in
 // entry, whose B_OptionItem xboxlive has too), on a background as that one's
 constexpr List kChoiceList{"xboxlive", "P_Options_RecompPopup", "ChoiceList", "B_OptionItem", "50 267", 4};
 constexpr std::string_view kPopupBackground[] = {"246", "404"};  // top, bottom
-// per button, the F10 headings listed as sections, as story's; at most kSectionList.rows
-const std::vector<std::string_view> kSections[] = {
-    {"DISPLAY", "GRAPHICS", "GENERAL"},
-    {"MOUSE", "KEYBOARD"},
-    {"GENERAL", "GYRO", "BUTTONS"},
-};
+// the RECOMP SETTINGS sections: F10 headings, as story's
+constexpr std::string_view kSections[] = {"DISPLAY", "GRAPHICS", "GENERAL"};
 // our menus keep their page (0 sections, 1 rows, 2 popup), the button's mode and the section heading's row past the
 // base menu's fields (P_Options_Game's own start at +0xC8)
 constexpr uint32_t kMenuKind = 0x100;
@@ -507,29 +503,13 @@ std::u16string Titled(std::string_view text) {
     return std::u16string(titled.begin(), titled.end());
 }
 
-// a row a section's list shows
-bool Listed(const app::rows::Row& r) {
-    using app::rows::Kind;
-    if (r.kind == Kind::Value) return app::rows::Shown(r);
-    return r.kind == Kind::Bind || r.kind == Kind::PadBind;
-}
-
-// the button's sections that have rows to list, as their headings' rows (versus hides the gyro)
-std::vector<int> ListedSections(int mode) {
+// the row of heading `name` on the RECOMP SETTINGS rows
+int Heading(std::string_view name) {
     size_t count = 0;
-    const app::rows::Row* rows = app::rows::Page(mode, &count);
-    std::vector<int> out;
-    for (std::string_view name : kSections[mode]) {
-        for (size_t i = 0; i < count; i++) {
-            if (rows[i].kind != app::rows::Kind::Heading || rows[i].label != name) continue;
-            bool any = false;
-            for (size_t j = i + 1; !any && j < count && rows[j].kind != app::rows::Kind::Heading; j++)
-                any = Listed(rows[j]);
-            if (any) out.push_back(int(i));
-            break;
-        }
-    }
-    return out;
+    const app::rows::Row* rows = app::rows::Page(0, &count);
+    for (size_t i = 0; i < count; i++)
+        if (rows[i].kind == app::rows::Kind::Heading && rows[i].label == name) return int(i);
+    return -1;
 }
 
 // an instance's place: its keyframes' (+0x18 begin, end; keyframe +0x18) and its widget's (+4) position frames
@@ -581,8 +561,7 @@ void SetTitle(X86Context& ctx, uint32_t page, const std::u16string& text) {
 void FillSections(X86Context& ctx, uint32_t menu) {
     uint32_t page = R32(menu + kMenuPage);
     uint32_t list = ListOf(ctx, page, kSectionList.list);
-    int mode = int(R32(menu + kMenuMode));
-    SetTitle(ctx, page, Titled(kButtons[mode].label));
+    SetTitle(ctx, page, Titled(kButtons[0].label));
     if (!list) {
         LOGI("versus options: no list on %s", std::string(kSectionList.page).c_str());
         return;
@@ -590,11 +569,9 @@ void FillSections(X86Context& ctx, uint32_t menu) {
     uint32_t label = CallThis(ctx, kPart, list, {Id("ItemText")});
     CallThis(ctx, kClear, list);
     // in capitals as the Options rows
-    size_t count = 0;
-    const app::rows::Row* rows = app::rows::Page(mode, &count);
-    for (int heading : ListedSections(mode)) {
+    for (std::string_view name : kSections) {
         uint32_t row = CallThis(ctx, kAddItem, list, {kEmpty, 0});
-        CallThis(ctx, kSetText, list, {row, label, Guest(Caps(Translated(rows[heading].label)))});
+        CallThis(ctx, kSetText, list, {row, label, Guest(Caps(Translated(name)))});
     }
     g_sections = menu;
 }
@@ -620,10 +597,10 @@ void WriteValues(X86Context& ctx) {
 }
 
 // the rows our list shows, into g_rows
-void CollectRows(const app::rows::Row* rows, size_t count, int section, bool in_section, bool restore) {
+void CollectRows(const app::rows::Row* rows, size_t count, int section, bool in_section) {
     using app::rows::Kind;
-    // a section's rows up to the next heading, else all with a blank row for each heading but the first; MOUSE AND
-    // KEYBOARD and CONTROLLER then a blank row and RESTORE DEFAULTS
+    // a section's value rows up to the next heading; MOUSE AND KEYBOARD and CONTROLLER with a blank row for each
+    // heading but the first, then a blank row and RESTORE DEFAULTS
     for (size_t i = in_section ? size_t(section) + 1 : 0; i < count; i++) {
         const app::rows::Row& r = rows[i];
         if (r.kind == Kind::Heading && in_section) break;
@@ -632,7 +609,7 @@ void CollectRows(const app::rows::Row* rows, size_t count, int section, bool in_
             continue;
         g_rows.rows.push_back(&r);
     }
-    if (restore) {
+    if (!in_section) {
         g_rows.rows.push_back(&kGap);
         g_rows.rows.push_back(nullptr);
     }
@@ -642,8 +619,7 @@ void CollectRows(const app::rows::Row* rows, size_t count, int section, bool in_
 void PlaceList(X86Context& ctx, uint32_t page, bool in_section) {
     if (uint32_t inst = CallThis(ctx, kFind, page, {Id(kRowList.list)})) {
         int rows_shown = int(std::min<size_t>(g_rows.rows.size(), size_t(kRowList.rows)));
-        int middle = std::max(kRowListY, kFrameMiddle - rows_shown * kRowHeight / 2);
-        SetY(inst, in_section ? middle : kRowListY);
+        SetY(inst, in_section ? kFrameMiddle - rows_shown * kRowHeight / 2 : kRowListY);
     }
 }
 
@@ -664,7 +640,7 @@ void FillRows(X86Context& ctx, uint32_t menu) {
     uint32_t list = ListOf(ctx, page, kRowList.list);
     size_t count = 0;
     const app::rows::Row* rows = app::rows::Page(mode, &count);
-    bool in_section = section >= 0 && size_t(section) < count;
+    bool in_section = mode == 0 && section >= 0 && size_t(section) < count;
     SetTitle(ctx, page, Titled(in_section ? rows[section].label : kButtons[mode].label));
     if (!list) {
         LOGI("versus options: no list on %s", std::string(kRowList.page).c_str());
@@ -674,7 +650,7 @@ void FillRows(X86Context& ctx, uint32_t menu) {
     uint32_t value = CallThis(ctx, kPart, list, {Id("ItemValue")});
     CallThis(ctx, kClear, list);
     g_rows = {menu, list, value, mode, {}};
-    CollectRows(rows, count, section, in_section, mode >= 1);
+    CollectRows(rows, count, section, in_section);
     PlaceList(ctx, page, in_section);
     AddRows(ctx, list, label);
     WriteValues(ctx);
@@ -846,14 +822,14 @@ bool Act(X86Context& ctx, int step) {
 // section picked on the sections list, 4 a row, 5 the value picked in the popup
 void Press(X86Context& __restrict ctx, uint8_t*) {
     int kind = int(R32(ctx.ecx + kHandlerKind));
-    if (kind <= kControllerButton) {
-        OpenPage(ctx, kSectionList, kind, -1);
+    if (kind == kSettingsButton) {
+        OpenPage(ctx, kSectionList, 0, -1);
+    } else if (kind <= kControllerButton) {
+        OpenPage(ctx, kRowList, kind, -1);
     } else if (kind == kSectionPick) {
         uint32_t list = g_sections ? ListOf(ctx, R32(g_sections + kMenuPage), kSectionList.list) : 0;
-        int mode = g_sections ? int(R32(g_sections + kMenuMode)) : 0;
-        std::vector<int> sections = ListedSections(mode);
         int row = Selected(list);
-        if (row >= 0 && row < int(sections.size())) OpenPage(ctx, kRowList, mode, sections[size_t(row)]);
+        if (row >= 0 && row < int(std::size(kSections))) OpenPage(ctx, kRowList, 0, Heading(kSections[row]));
     } else if (kind == kRowPick) {
         Act(ctx, 0);
     } else if (g_popup.row) {

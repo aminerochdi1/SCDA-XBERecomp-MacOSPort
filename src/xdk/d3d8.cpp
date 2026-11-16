@@ -1,13 +1,5 @@
 // Direct3D 8 (XDK 5849) entry points the title calls, implemented on the host renderer.
 // Resource creation, locking and the XG helpers stay recompiled: they only manage memory.
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -183,13 +175,6 @@ void Occlusion(const float* m, bool gtao) {
     g_backend->Occlusion(g_state, p);
 }
 
-void LatchDistanceFog(float start, float end) {
-    std::lock_guard<std::recursive_mutex> lock(g_lock);
-    if (end <= start) return;
-    float slope = 1 / (end - start);
-    g_fog = {slope, -start * slope, 1.0f};
-}
-
 void FilterShadows(const float* m) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     if (!g_backend || m[11] != 1.0f || m[15] != 0.0f) return;
@@ -234,15 +219,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     }
     if (!g_backend) {
         g_backend = gpu::CreateBackend();
-        if (!g_backend->Init(w, h)) {
-            LOGE("d3d: renderer init failed");
-            // no owner window, as this runs on the title's thread and the window may already be fullscreen over the box
-            MessageBoxW(nullptr,
-                        L"Direct3D 12 could not be started. Make sure your graphics card supports it and its driver "
-                        L"is up to date.",
-                        L"Splinter Cell: Double Agent", MB_ICONERROR | MB_TOPMOST);
-            Shutdown(1);
-        }
+        if (!g_backend->Init(w, h)) LOGE("d3d: renderer init failed");
         g_backend = gpu::CreateThreadedBackend(std::move(g_backend));
     }
     g_state = gpu::State{};
@@ -422,7 +399,6 @@ std::atomic<uint32_t> g_presents{0};
 }  // namespace
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
-    app::WaitWhileUnfocused();
     app::SplashFirstFrame();
     // handed over from the previous instance: the window opens on the second frame, the first ShowScreen's picture
     // with anything drawn over it right after (the mission picture's bar)

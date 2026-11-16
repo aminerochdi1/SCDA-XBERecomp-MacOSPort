@@ -12,11 +12,73 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <chrono>
+#include <thread>
+
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+constexpr int SOCKET_ERROR = -1;
+using DWORD = uint32_t;
+using BOOL = int;
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
+
+inline int closesocket(SOCKET s) { return close(s); }
+inline int ioctlsocket(SOCKET s, long cmd, u_long* argp) { return ioctl(s, cmd, argp); }
+
+#define WSAGetLastError() errno
+#define WSAEWOULDBLOCK EWOULDBLOCK
+#define WSAEINPROGRESS EINPROGRESS
+#define WSAECONNRESET ECONNRESET
+#define WSAENETUNREACH ENETUNREACH
+#define WSAEADDRINUSE EADDRINUSE
+#define WSAEINVAL EINVAL
+#define WSAENOTSOCK ENOTSOCK
+#define WSAEAFNOSUPPORT EAFNOSUPPORT
+#define WSAESOCKTNOSUPPORT EPROTONOSUPPORT
+#define WSAETIMEDOUT ETIMEDOUT
+#define WSAHOST_NOT_FOUND 11001
+#define WSA_IO_PENDING 997
+#define WSA_IO_INCOMPLETE 996
+#define WSA_OPERATION_ABORTED 995
+#ifndef FIONBIO
+#define FIONBIO 0x8004667E
+#endif
+
+struct WSADATA {};
+inline int WSAStartup(int, WSADATA*) { return 0; }
+inline int WSACleanup() { return 0; }
+inline int MAKEWORD(int a, int b) { return (a | (b << 8)); }
+inline uint64_t GetTickCount64() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+inline void Sleep(uint32_t ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+inline const wchar_t* GetCommandLineW() {
+    return L"";
+}
+#endif
 
 #include <algorithm>
 #include <array>
@@ -49,7 +111,7 @@ constexpr uint32_t kFdSetMax = 64;
 constexpr uint32_t kSocketError = 0xFFFFFFFF;
 constexpr uint32_t kLinkUp = 0x01 | 0x02 | 0x08;          // active, 100 Mbps, full duplex
 constexpr uint32_t kXnAddrEthernet = 0x02 | 0x04;         // ethernet, static address
-constexpr DWORD kUdpConnReset = 0x9800000C;  // SIO_UDP_CONNRESET: off, or a send to a closed port fails the next recv
+constexpr uint32_t kUdpConnReset = 0x9800000C;  // SIO_UDP_CONNRESET: off, or a send to a closed port fails the next recv
 constexpr int kLoopbackInstances = 8;
 constexpr uint32_t kVdpProtocol = 254;  // IPPROTO_VDP: game data and voice in one datagram
 
@@ -93,9 +155,6 @@ std::unordered_map<uint32_t, std::array<uint8_t, kXnAddrSize>> g_peers;
 thread_local uint32_t t_error = 0;
 
 std::atomic<uint32_t> g_remote{0};  // the last public address a packet came from
-// a session: the game sent another machine a packet this recently (lockstep and PRUDP keep sending)
-constexpr uint64_t kSessionHoldMs = 10000;
-std::atomic<uint64_t> g_peer_sent{0};  // GetTickCount64 of the last one
 std::mutex g_nat_lock;
 std::unordered_map<uint64_t, uint16_t> g_nat;  // (peer address, our port) -> the port its packets come from
 std::vector<uint32_t> g_public;                // public addresses packets came from, the latest last
@@ -183,7 +242,7 @@ uint32_t PrimaryAddress() {
     to.sin_port = htons(53);
     to.sin_addr.s_addr = htonl(0x08080808);  // no packet is sent: connect only picks the route
     sockaddr_in me{};
-    int len = sizeof(me);
+    socklen_t len = sizeof(me);
     if (s != INVALID_SOCKET && ::connect(s, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0 &&
         ::getsockname(s, reinterpret_cast<sockaddr*>(&me), &len) == 0 && me.sin_addr.s_addr)
         addr = me.sin_addr.s_addr;
@@ -235,7 +294,7 @@ bool Wait(SOCKET s, bool write, int ms) {
     FD_ZERO(&f);
     FD_SET(s, &f);
     timeval tv{ms / 1000, (ms % 1000) * 1000};
-    return ::select(0, write ? nullptr : &f, write ? &f : nullptr, nullptr, &tv) > 0;
+    return ::select(int(s) + 1, write ? nullptr : &f, write ? &f : nullptr, nullptr, &tv) > 0;
 }
 
 std::vector<Span> Spans(uint32_t bufs, uint32_t count) {
@@ -248,7 +307,7 @@ std::vector<Span> Spans(uint32_t bufs, uint32_t count) {
 int Recv(uint32_t sock, SOCKET s, const std::vector<Span>& spans, uint32_t from, uint32_t fromlen, int& err) {
     thread_local std::vector<uint8_t> buf(65536);
     sockaddr_in src{};
-    int sl = sizeof(src);
+    socklen_t sl = sizeof(src);
     int n;
     for (;;) {
         sl = sizeof(src);
@@ -321,8 +380,6 @@ int SendOnce(SOCKET s, const uint8_t* data, int len, const sockaddr_in* to) {
 
 int Send(uint32_t sock, SOCKET s, const uint8_t* data, int len, const sockaddr_in* to) {
     int n = SendOnce(s, data, len, to);
-    bool unicast = !to || (to->sin_addr.s_addr != INADDR_BROADCAST && to->sin_addr.s_addr != g_local);
-    if (n >= 0 && unicast) g_peer_sent = GetTickCount64();
     if (n >= 0 && to && to->sin_addr.s_addr != INADDR_BROADCAST && Find(sock).port == htons(kPrudpPort)) {
         std::lock_guard<std::mutex> lock(g_coop_lock);
         g_coop_peers[to->sin_addr.s_addr] = {sock, to->sin_port, GetTickCount64()};
@@ -402,19 +459,25 @@ void Pump() {
         SendCoop();
         fd_set set;
         FD_ZERO(&set);
+        int fd_count = 0;
+        int max_fd = -1;
         {
             std::lock_guard<std::mutex> lock(g_lock);
             for (auto& p : g_pending) {
                 auto it = g_sockets.find(p.sock);
-                if (it != g_sockets.end() && set.fd_count < FD_SETSIZE) FD_SET(it->second.s, &set);
+                if (it != g_sockets.end() && fd_count < FD_SETSIZE) {
+                    FD_SET(it->second.s, &set);
+                    if (it->second.s > max_fd) max_fd = it->second.s;
+                    fd_count++;
+                }
             }
         }
-        if (!set.fd_count) {
+        if (!fd_count) {
             Sleep(1);
             continue;
         }
         timeval tv{0, 2000};
-        if (::select(0, &set, nullptr, nullptr, &tv) <= 0) {
+        if (::select(max_fd + 1, &set, nullptr, nullptr, &tv) <= 0) {
             Sleep(1);
             continue;
         }
@@ -466,11 +529,6 @@ bool SendVoiceLink(uint32_t address, const void* data, int len) {
     to.sin_port = route.port;
     to.sin_addr.s_addr = address;
     return SendOnce(k.s, static_cast<const uint8_t*>(data), len, &to) >= 0;
-}
-
-bool InSession() {
-    uint64_t sent = g_peer_sent;
-    return sent && GetTickCount64() - sent < kSessionHoldMs;
 }
 
 void SetCoopHost(bool (*host)(uint32_t& rate, uint32_t& floor)) { g_coop_host = host; }
@@ -599,11 +657,13 @@ HLE_STDCALL(XNetDnsRelease, 1) {
 static uint32_t AddSocket(SOCKET s, bool udp, bool vdp = false) {
     u_long on = 1;
     ::ioctlsocket(s, FIONBIO, &on);
+#ifdef _WIN32
     if (udp) {
         BOOL off = FALSE;
         DWORD ret = 0;
         WSAIoctl(s, kUdpConnReset, &off, sizeof(off), nullptr, 0, &ret, nullptr, nullptr);
     }
+#endif
     std::lock_guard<std::mutex> lock(g_lock);
     uint32_t id = g_next_socket;
     g_next_socket += 4;
@@ -663,7 +723,7 @@ HLE_STDCALL(setsockopt, 5) {
 HLE_STDCALL(getsockopt, 5) {
     Socket k = Find(a[0]);
     if (k.s == INVALID_SOCKET) return Fail(WSAENOTSOCK);
-    int len = int(R32(a[4]));
+    socklen_t len = socklen_t(R32(a[4]));
     if (::getsockopt(k.s, int(a[1]), int(a[2]), static_cast<char*>(HostPtr(a[3])), &len) != 0) return Fail(WSAGetLastError());
     W32(a[4], uint32_t(len));
     return 0;
@@ -672,7 +732,7 @@ HLE_STDCALL(getsockname, 3) {
     Socket k = Find(a[0]);
     if (k.s == INVALID_SOCKET) return Fail(WSAENOTSOCK);
     sockaddr_in me{};
-    int len = sizeof(me);
+    socklen_t len = sizeof(me);
     if (::getsockname(k.s, reinterpret_cast<sockaddr*>(&me), &len) != 0) return Fail(HostError());
     std::memcpy(HostPtr(a[1]), &me, sizeof(me));
     W32(a[2], sizeof(me));
@@ -690,7 +750,7 @@ HLE_STDCALL(bind, 3) {
     }
     LOGI("xnet: bind %X to %s", a[0], Addr(at).c_str());
     sockaddr_in me{};
-    int len = sizeof(me);
+    socklen_t len = sizeof(me);
     ::getsockname(k.s, reinterpret_cast<sockaddr*>(&me), &len);
     std::lock_guard<std::mutex> lock(g_lock);
     if (auto it = g_sockets.find(a[0]); it != g_sockets.end()) it->second.port = me.sin_port;
@@ -704,7 +764,8 @@ HLE_STDCALL(connect, 3) {
     int e = HostError();
     if (e != WSAEWOULDBLOCK || k.nonblocking) return Fail(e);
     if (!Wait(k.s, true, 10000)) return Fail(WSAETIMEDOUT);
-    int err = 0, len = sizeof(err);
+    int err = 0;
+    socklen_t len = sizeof(err);
     ::getsockopt(k.s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len);
     return err ? Fail(err) : 0;
 }
@@ -718,7 +779,7 @@ HLE_STDCALL(accept, 3) {
         Socket k = Find(a[0]);
         if (k.s == INVALID_SOCKET) return Fail(WSAENOTSOCK);
         sockaddr_in from{};
-        int len = sizeof(from);
+        socklen_t len = sizeof(from);
         SOCKET s = ::accept(k.s, reinterpret_cast<sockaddr*>(&from), &len);
         if (s != INVALID_SOCKET) {
             if (a[1]) std::memcpy(HostPtr(a[1]), &from, sizeof(from));
@@ -736,6 +797,7 @@ HLE_STDCALL(select, 5) {
     fd_set host[3];
     std::vector<std::pair<uint32_t, SOCKET>> used[3];
     int total = 0;
+    int max_fd = -1;
     for (int i = 0; i < 3; i++) {
         FD_ZERO(&host[i]);
         if (!guest[i]) continue;
@@ -745,6 +807,7 @@ HLE_STDCALL(select, 5) {
             Socket k = Find(id);
             if (k.s == INVALID_SOCKET) continue;
             FD_SET(k.s, &host[i]);
+            if (k.s > max_fd) max_fd = k.s;
             used[i].push_back({id, k.s});
             total++;
         }
@@ -760,7 +823,7 @@ HLE_STDCALL(select, 5) {
     if (!total) {
         if (ptv) Sleep(DWORD(tv.tv_sec * 1000 + tv.tv_usec / 1000));
     } else {
-        r = ::select(0, guest[0] ? &host[0] : nullptr, guest[1] ? &host[1] : nullptr, guest[2] ? &host[2] : nullptr, ptv);
+        r = ::select(max_fd + 1, guest[0] ? &host[0] : nullptr, guest[1] ? &host[1] : nullptr, guest[2] ? &host[2] : nullptr, ptv);
         if (r < 0) return Fail(HostError());
     }
     for (int i = 0; i < 3; i++) {
@@ -806,10 +869,7 @@ HLE_STDCALL(send, 4) {
         Socket k = Find(a[0]);
         if (k.s == INVALID_SOCKET) return Fail(WSAENOTSOCK);
         int n = ::send(k.s, static_cast<const char*>(HostPtr(a[1])), int(a[2]), int(a[3]));
-        if (n >= 0) {
-            g_peer_sent = GetTickCount64();
-            return uint32_t(n);
-        }
+        if (n >= 0) return uint32_t(n);
         int e = WSAGetLastError();
         if (e != WSAEWOULDBLOCK || k.nonblocking) return Fail(e);
         Wait(k.s, true, 50);

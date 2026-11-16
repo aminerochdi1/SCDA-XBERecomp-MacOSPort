@@ -15,13 +15,15 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #endif
 #include "xbe/xbe.h"
 #include "xdk/hle.h"
 
 namespace dispatch {
 void Init();
-uint32_t EntryPoint();
 uint32_t KernelThunkAddress(uint32_t ordinal);
 }  // namespace dispatch
 
@@ -96,9 +98,9 @@ bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::stri
     }
     g_image = &g_xbe;
     const xbe::Image& img = g_xbe;
-    if (img.entry != dispatch::EntryPoint()) {
+    if (img.entry != X86EntryPoint) {
         LOGE("boot: %s entry %08X does not match the recompiled entry %08X, wrong executable", xbe_name.c_str(), img.entry,
-             dispatch::EntryPoint());
+             X86EntryPoint);
         return false;
     }
     LOGI("boot: title %08X, entry %08X, %zu sections", img.title_id, img.entry, img.sections.size());
@@ -206,7 +208,15 @@ void Relaunch(const char* exe) {
     std::_Exit(0);
 #else
     char self[4096] = {};
+#if defined(__APPLE__)
+    uint32_t buf_size = sizeof(self);
+    if (_NSGetExecutablePath(self, &buf_size) != 0) {
+        self[0] = '\0';
+    }
+    ssize_t n = std::strlen(self);
+#else
     ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+#endif
     std::string path = std::string(self, n > 0 ? size_t(n) : 0);
     path = path.substr(0, path.find_last_of('/') + 1) + exe;
     execl(path.c_str(), path.c_str(), nullptr);

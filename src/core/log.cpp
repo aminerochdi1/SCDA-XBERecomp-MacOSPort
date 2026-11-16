@@ -9,6 +9,9 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -16,6 +19,7 @@ namespace logx {
 
 static std::mutex g_mutex;
 static FILE* g_file = nullptr;
+static int g_term_stderr = -1;
 static std::string g_path;
 static auto g_start = std::chrono::steady_clock::now();
 
@@ -47,6 +51,12 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
     std::snprintf(name, sizeof(name), "%s_%03d.log", prefix.c_str(), runs.empty() ? 1 : runs.back().first + 1);
     g_path = (fs::path(dir) / name).string();
     g_file = std::fopen(g_path.c_str(), "w");
+#if !defined(_WIN32)
+    if (g_file && g_term_stderr < 0) {
+        g_term_stderr = dup(STDERR_FILENO);
+        dup2(fileno(g_file), STDERR_FILENO);
+    }
+#endif
 }
 
 const std::string& Path() { return g_path; }
@@ -70,7 +80,15 @@ void Write(Level lv, const char* fmt, ...) {
         std::fwrite(line, 1, size_t(n), g_file);
         if (lv >= Level::Warn) std::fflush(g_file);
     }
+#if !defined(_WIN32)
+    if (g_term_stderr >= 0) {
+        (void)::write(g_term_stderr, line, size_t(n));
+    } else {
+        std::fwrite(line, 1, size_t(n), stderr);
+    }
+#else
     std::fwrite(line, 1, size_t(n), stderr);
+#endif
 }
 
 void Flush() {

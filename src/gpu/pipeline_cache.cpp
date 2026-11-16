@@ -1,3 +1,4 @@
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -20,7 +21,6 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "app/app.h"
@@ -41,10 +41,6 @@ constexpr uint32_t kShaderVersion = 1;         // bump when the compile flags ch
 constexpr uint64_t kMaxShaderFile = 256ull << 20;
 constexpr uint64_t kMaxLibraryFile = 1ull << 30;
 constexpr int64_t kSaveIdleMs = 10000;
-// <exe>_pipeline_keys.bin: FileHeader, then a KeyRecord and its bytes for each pipeline the first time it is drawn
-constexpr uint32_t kKeysMagic = 0x4B504353;  // 'SCPK'
-constexpr uint32_t kKeysVersion = 1;
-constexpr uint64_t kMaxKeysFile = 64ull << 20;
 
 struct FileHeader {
     uint32_t magic, version;
@@ -63,19 +59,6 @@ struct Shaders {
         uint32_t size;
     };
     std::unordered_map<uint64_t, Entry> index;
-    HANDLE file = INVALID_HANDLE_VALUE;
-};
-
-struct KeyRecord {
-    uint64_t hash;  // Hash over the key's bytes
-    uint32_t size;
-    uint32_t unused;
-};
-
-struct Keys {
-    std::mutex lock;
-    std::unordered_set<uint64_t> known;
-    std::vector<std::vector<uint8_t>> loaded;
     HANDLE file = INVALID_HANDLE_VALUE;
 };
 
@@ -110,10 +93,6 @@ Library& L() {
 Pool& P() {
     static Pool* p = new Pool;
     return *p;
-}
-Keys& K() {
-    static Keys* k = new Keys;
-    return *k;
 }
 
 int64_t NowMs() {
@@ -207,47 +186,6 @@ void OpenBase(const std::filesystem::path& path) {
     LOGI("shader cache: %zu more from %s", s.index.size() - before, path.filename().string().c_str());
 }
 
-// the records of data kept in k; where the good ones end, 0 without a valid header
-size_t IndexKeys(Keys& k, const std::vector<uint8_t>& data) {
-    if (data.size() < sizeof(FileHeader)) return 0;
-    FileHeader fh;
-    std::memcpy(&fh, data.data(), sizeof(fh));
-    if (fh.magic != kKeysMagic || fh.version != kKeysVersion) return 0;
-    size_t good = sizeof(fh);
-    while (good + sizeof(KeyRecord) <= data.size()) {
-        KeyRecord r;
-        std::memcpy(&r, data.data() + good, sizeof(r));
-        size_t at = good + sizeof(r);
-        if (r.size > data.size() - at || Hash(data.data() + at, r.size) != r.hash) break;
-        if (k.known.insert(r.hash).second) k.loaded.emplace_back(data.begin() + at, data.begin() + at + r.size);
-        good = at + r.size;
-    }
-    return good;
-}
-
-void OpenKeys(const std::filesystem::path& path) {
-    Keys& k = K();
-    k.file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
-                         FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (k.file == INVALID_HANDLE_VALUE) {
-        LOGW("pipeline keys: %s cannot be opened (%lu)", path.string().c_str(), GetLastError());
-        return;
-    }
-    std::vector<uint8_t> data;
-    size_t good = 0;
-    if (ReadAll(k.file, data) && data.size() <= kMaxKeysFile) good = IndexKeys(k, data);
-    if (!good) {
-        k.known.clear();
-        k.loaded.clear();
-        Truncate(k.file, 0);
-        FileHeader fh{kKeysMagic, kKeysVersion};
-        Append(k.file, &fh, sizeof(fh));
-    } else if (good < data.size()) {
-        Truncate(k.file, good);
-    }
-    LOGI("pipeline keys: %zu from %s", k.loaded.size(), path.filename().string().c_str());
-}
-
 void OpenLibrary(ID3D12Device* dev, const std::filesystem::path& path) {
     Library& l = L();
     ComPtr<ID3D12Device1> dev1;
@@ -314,9 +252,7 @@ void Open(ID3D12Device* dev, uint64_t root) {
     OpenShaders(dir / "shaders.bin");
     OpenBase(dir / "base_shaders.bin");
     // per executable: offline and versus write theirs whole
-    std::wstring stem = std::filesystem::path(exe).stem().wstring();
-    OpenLibrary(dev, dir / (stem + L"_pipelines.bin"));
-    OpenKeys(dir / (stem + L"_pipeline_keys.bin"));
+    OpenLibrary(dev, dir / (std::filesystem::path(exe).stem().wstring() + L"_pipelines.bin"));
 }
 
 ComPtr<ID3DBlob> FindShader(uint64_t key, uint64_t check) {
@@ -367,33 +303,11 @@ void SaveWhenIdle() {
     });
 }
 
-std::vector<std::vector<uint8_t>> TakePipelineKeys() {
-    Keys& k = K();
-    std::lock_guard lock(k.lock);
-    return std::move(k.loaded);
-}
-
-void AddPipelineKey(const void* key, size_t size) {
-    Keys& k = K();
-    if (k.file == INVALID_HANDLE_VALUE) return;
-    KeyRecord r{Hash(key, size), uint32_t(size), 0};
-    std::lock_guard lock(k.lock);
-    if (!k.known.insert(r.hash).second) return;
-    std::vector<uint8_t> out(sizeof(r) + size);
-    std::memcpy(out.data(), &r, sizeof(r));
-    std::memcpy(out.data() + sizeof(r), key, size);
-    Append(k.file, out.data(), out.size());
-}
-
-void Post(std::function<void()> job, bool ahead) {
+void Post(std::function<void()> job) {
     Pool& p = P();
     {
         std::lock_guard lock(p.lock);
-        if (ahead) {
-            p.jobs.push_front(std::move(job));
-        } else {
-            p.jobs.push_back(std::move(job));
-        }
+        p.jobs.push_back(std::move(job));
         if (!p.started) {
             p.started = true;
             // the title's thread, the render thread and audio keep theirs
@@ -437,4 +351,4 @@ void SavePipelineCache() {
     LOGI("pipeline cache: %u new, %.1f MB saved", n, data.size() / 1048576.0);
 }
 
-}  // namespace gpu
+#endif

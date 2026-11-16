@@ -1,6 +1,11 @@
 // The game relaunches itself between the front end and a mission (a quick reboot on the Xbox, a new process here).
 // The old instance keeps its window up in kernel::Relaunch until this one has presented its first frames, so the
 // kept picture stays on screen through the switch. Here the window is created hidden and opens at that point.
+#include "app/app.h"
+#include "core/log.h"
+#include "kernel/kernel.h"
+
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,10 +15,6 @@
 #include <windows.h>
 
 #include <atomic>
-
-#include "app/app.h"
-#include "core/log.h"
-#include "kernel/kernel.h"
 
 namespace app {
 
@@ -39,3 +40,10 @@ void FinishHandover() {
 }
 
 }  // namespace app
+#else
+namespace app {
+bool StartHandover() { return false; }
+bool HandingOver() { return false; }
+void FinishHandover() {}
+}  // namespace app
+#endif

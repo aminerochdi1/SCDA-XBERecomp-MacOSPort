@@ -13,6 +13,15 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
 #endif
 
 namespace mem {
@@ -55,13 +64,32 @@ bool Init() {
         UnmapViewOfFile(b + kWriteCombineBase);
     }
 #else
-    void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    void* p = mmap(reinterpret_cast<void*>(0x100000000ull), size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) {
+        p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    }
     g_base = p == MAP_FAILED ? nullptr : static_cast<uint8_t*>(p);
-    int fd = g_base ? memfd_create("ram", 0) : -1;
+
+    int fd = -1;
+#if defined(__APPLE__)
+    if (g_base) {
+        char shm_name[64];
+        snprintf(shm_name, sizeof(shm_name), "/scda_ram_%d", getpid());
+        fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) {
+            shm_unlink(shm_name);
+        }
+    }
+#elif defined(__linux__)
+    fd = g_base ? memfd_create("ram", 0) : -1;
+#endif
+
     if (fd < 0 || ftruncate(fd, kPhysicalSize) ||
         mmap(g_base + kContiguousBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED ||
-        mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED)
+        mmap(g_base + kWriteCombineBase, kPhysicalSize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == MAP_FAILED) {
+        if (fd >= 0) close(fd);
         g_base = nullptr;
+    }
 #endif
     if (!g_base) {
         LOGE("memory: could not reserve the 4 GB guest space");
@@ -85,7 +113,10 @@ bool Commit(uint32_t va, uint32_t size) {
         return false;
     }
 #else
-    if (mprotect(g_base + first, size_t(end - first), PROT_READ | PROT_WRITE)) {
+    uintptr_t host_mask = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE)) - 1;
+    uintptr_t host_first = reinterpret_cast<uintptr_t>(g_base + first) & ~host_mask;
+    uintptr_t host_end = (reinterpret_cast<uintptr_t>(g_base + end) + host_mask) & ~host_mask;
+    if (mprotect(reinterpret_cast<void*>(host_first), host_end - host_first, PROT_READ | PROT_WRITE) != 0) {
         LOGE("memory: commit %08X+%X failed", first, uint32_t(end - first));
         return false;
     }
@@ -102,8 +133,13 @@ void Decommit(uint32_t va, uint32_t size) {
 #ifdef _WIN32
     VirtualFree(g_base + first, size_t(end - first), MEM_DECOMMIT);
 #else
-    madvise(g_base + first, size_t(end - first), MADV_DONTNEED);
-    mprotect(g_base + first, size_t(end - first), PROT_NONE);
+    uintptr_t host_page_size = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
+    uintptr_t host_mask = host_page_size - 1;
+    uintptr_t host_first = (reinterpret_cast<uintptr_t>(g_base + first) + host_mask) & ~host_mask;
+    uintptr_t host_end = reinterpret_cast<uintptr_t>(g_base + end) & ~host_mask;
+    if (host_end > host_first) {
+        madvise(reinterpret_cast<void*>(host_first), host_end - host_first, MADV_DONTNEED);
+    }
 #endif
     for (uint64_t p = first; p < end; p += kPage) g_committed[size_t(p >> 12)] = 0;
 }

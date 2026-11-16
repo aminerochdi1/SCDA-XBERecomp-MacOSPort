@@ -8,7 +8,6 @@
 #include <cstring>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "app/app.h"
@@ -29,7 +28,6 @@ namespace {
 // the interaction prompt (p_interatt) is one centred widget with fades at its sides: it stays 4:3 like a menu
 constexpr uint32_t kHudPages[] = {game::magma::Id("p_hudatt"), game::magma::Id("p_spectatormode")};
 constexpr uint32_t kLoadingPage = game::magma::Id("p_loading");
-constexpr uint32_t kMainMenu = game::magma::Id("p_mainmenu");
 static_assert(kLoadingPage == 0x50A0D1DB);
 constexpr uint32_t kMagma = 0x3D8D74;  // manager: +0x38 viewport (+0x9C width, +0xA0 height in pixels)
 constexpr uint32_t kMagmaViewport = 0x38;
@@ -56,8 +54,6 @@ struct Quad {
     uint32_t util;
     float corners[12];
     uint32_t args[12];
-    std::vector<uint32_t> path;  // the instances it was drawn inside, below the captured one
-    Mode mode = Mode::Centre;
 };
 
 bool g_hud = false;      // a HUD page is being drawn
@@ -65,11 +61,9 @@ bool g_capture = false;  // a HUD instance is being drawn: its quads wait for it
 bool g_replay = false;
 bool g_pages = false;    // a page was drawn this frame
 bool g_projected = false;  // Enhanced Reality icons are being drawn
-bool g_icon = false;       // one of them is being captured
 bool g_picture = false;    // the loading page is being drawn: as the game draws it, shown 4:3
 Mode g_mode = Mode::Centre;
 std::vector<Quad> g_quads;
-std::vector<uint32_t> g_path;
 // the side each HUD instance was placed on: one reaching past the middle for a while (the weapon box showing a
 // picked up gadget) keeps it instead of going back to its 4:3 place
 std::unordered_map<uint32_t, Mode> g_sides;
@@ -163,44 +157,6 @@ Mode SideOf(float lo, float hi, float w) {
     return Mode::Centre;
 }
 
-// An instance on one side of the screen goes there whole. One across it (a page's frame with a letterbox inside) is
-// split into the instances drawn inside it, each placed by where it sits; its own quads go together.
-void Assign(const std::vector<Quad*>& group, size_t depth, uint32_t id, float w) {
-    float lo = w;
-    float hi = 0.0f;
-    for (const Quad* q : group) {
-        for (int i = 0; i < 12; i += 3) {
-            lo = std::min(lo, q->corners[i]);
-            hi = std::max(hi, q->corners[i]);
-        }
-    }
-    Mode mode = SideOf(lo, hi, w);
-    // inside a screen-wide instance, a piece about the middle stays centred (the respawn countdown's digit)
-    if (depth > 0 && mode != Mode::Stretch && std::fabs((lo + hi) / 2 - w / 2) < w / 6) mode = Mode::Centre;
-    else if (mode == Mode::Left || mode == Mode::Right) g_sides[id] = mode;
-    else if (auto side = g_sides.find(id); mode == Mode::Centre && side != g_sides.end()) mode = side->second;
-    if (mode == Mode::Stretch) {
-        std::vector<std::pair<uint32_t, std::vector<Quad*>>> inner;
-        std::vector<Quad*> own;
-        for (Quad* q : group) {
-            if (q->path.size() <= depth) {
-                own.push_back(q);
-                continue;
-            }
-            uint32_t child = q->path[depth];
-            auto it = std::find_if(inner.begin(), inner.end(), [&](const auto& c) { return c.first == child; });
-            if (it == inner.end()) inner.push_back({child, {q}});
-            else it->second.push_back(q);
-        }
-        if (!inner.empty()) {
-            for (auto& [child, quads] : inner) Assign(quads, depth + 1, child, w);
-            if (!own.empty()) Assign(own, depth, id, w);
-            return;
-        }
-    }
-    for (Quad* q : group) q->mode = mode;
-}
-
 }  // namespace
 
 // FPerspectiveMatrix(fov x, fov y, x scale, y scale, near, far), thiscall ret 0x18: M[0][0] = x scale / tan(fov x).
@@ -245,79 +201,14 @@ X86_FUNC(sub_0025A3F0) {
     g_picture = picture;
     versus::LeavePage();
     g_hud = saved;
-    if (id == kMainMenu) {
-        bool replay = std::exchange(g_replay, true);
-        g_mode = Mode::Right;
-        app::DrawWatermark(ctx);
-        g_replay = replay;
-    }
 }
 
-// Magma instance draw (thiscall, +8 id)
+// Magma instance draw (thiscall, +8 id). On a HUD page each instance is drawn into a list, then placed by the
+// half of the screen it covers and replayed; children come back through here inside their parent's list.
 X86_EXTERN_FUNC(__imp__sub_002620A0);
-
-namespace {
-
-// draws captured quads again, each placed by its mode
-void Replay(X86Context& ctx, const std::vector<Quad>& quads) {
-    uint32_t esp = ctx.esp;
-    uint32_t corners = (esp - 0x40) & ~0xFu;
-    ctx.esp = corners;
-    g_replay = true;
-    for (const auto& q : quads) {
-        g_mode = q.mode;
-        std::memcpy(&G<float>(corners), q.corners, sizeof q.corners);
-        ctx.ecx = q.util;
-        const uint32_t* a = q.args;
-        CallGuest(ctx, kAddQuad, {corners, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]});
-    }
-    g_replay = false;
-    ctx.esp = esp;
-}
-
-// An Enhanced Reality icon sits at its projected point already, but at the canvas's stretched width: it is captured
-// and narrowed to its 4:3 shape about its own centre
-void DrawIcon(X86Context& ctx, uint8_t* base) {
-    bool capture = std::exchange(g_capture, true);
-    std::vector<Quad> outer = std::exchange(g_quads, {});
-    std::vector<uint32_t> path = std::exchange(g_path, {});
-    g_icon = true;
-    __imp__sub_002620A0(ctx, base);
-    g_icon = false;
-    std::vector<Quad> quads = std::exchange(g_quads, std::move(outer));
-    g_path = std::move(path);
-    g_capture = capture;
-    if (quads.empty()) return;
-    float lo = quads[0].corners[0];
-    float hi = lo;
-    for (const auto& q : quads) {
-        for (int i = 0; i < 12; i += 3) {
-            lo = std::min(lo, q.corners[i]);
-            hi = std::max(hi, q.corners[i]);
-        }
-    }
-    float mid = (lo + hi) / 2;
-    float k = app::Narrow();
-    for (auto& q : quads) {
-        for (int i = 0; i < 12; i += 3) q.corners[i] = mid + (q.corners[i] - mid) * k;
-    }
-    Replay(ctx, quads);
-}
-
-}  // namespace
-
-// On a HUD page each instance is drawn into a list, then placed by the half of the screen it covers and replayed;
-// children come back through here inside their parent's list.
 X86_FUNC(sub_002620A0) {
-    if (g_projected && !g_icon && app::Widescreen()) return DrawIcon(ctx, base);
-    if (!g_hud || !app::Widescreen()) return __imp__sub_002620A0(ctx, base);
+    if (!g_hud || g_capture || !app::Widescreen()) return __imp__sub_002620A0(ctx, base);
     uint32_t id = R32(ctx.ecx + kInstanceId);
-    if (g_capture) {
-        g_path.push_back(id);
-        __imp__sub_002620A0(ctx, base);
-        g_path.pop_back();
-        return;
-    }
     g_capture = true;
     __imp__sub_002620A0(ctx, base);
     g_capture = false;
@@ -334,11 +225,22 @@ X86_FUNC(sub_002620A0) {
         }
     }
     Mode mode = SideOf(lo, hi, w);
-    std::vector<Quad*> group;
-    for (auto& q : quads) group.push_back(&q);
-    Assign(group, 0, id, w);
+    if (mode == Mode::Left || mode == Mode::Right) g_sides[id] = mode;
+    else if (auto side = g_sides.find(id); mode == Mode::Centre && side != g_sides.end()) mode = side->second;
     LOG_FIRST(100, "versus widescreen: instance %08X x %.0f..%.0f mode %d", id, lo, hi, int(mode));
-    Replay(ctx, quads);
+    uint32_t esp = ctx.esp;
+    uint32_t corners = (esp - 0x40) & ~0xFu;
+    ctx.esp = corners;
+    g_replay = true;
+    g_mode = mode;
+    for (auto& q : quads) {
+        std::memcpy(&G<float>(corners), q.corners, sizeof q.corners);
+        ctx.ecx = q.util;
+        const uint32_t* a = q.args;
+        CallGuest(ctx, kAddQuad, {corners, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]});
+    }
+    g_replay = false;
+    ctx.esp = esp;
 }
 
 // HUD Enhanced Reality (thiscall): objective icons at world positions projected through the widened 3D view, each
@@ -367,14 +269,12 @@ X86_FUNC(sub_00252B80) {
 X86_EXTERN_FUNC(__imp__sub_001231E0);
 X86_FUNC(sub_001231E0) {
     float w = Width();
-    bool projected = g_projected && !g_icon;
-    if (!app::Widescreen() || w <= 0.0f || projected || g_picture) return __imp__sub_001231E0(ctx, base);
+    if (!app::Widescreen() || w <= 0.0f || g_projected || g_picture) return __imp__sub_001231E0(ctx, base);
     uint32_t corners = R32(ctx.esp + 4);
     float c[12];
     std::memcpy(c, &G<float>(corners), sizeof c);
     if (g_capture) {
         Quad q{ctx.ecx};
-        q.path = g_path;
         std::memcpy(q.corners, c, sizeof c);
         for (int i = 0; i < 12; i++) q.args[i] = R32(ctx.esp + 8 + i * 4);
         g_quads.push_back(q);

@@ -47,6 +47,10 @@ X86_FUNC(sub_002E4552) {
 // BlurShadowEdges, thiscall render interface: the frame's shadow alpha down the 256..16 chain and back up into it
 X86_EXTERN_FUNC(__imp__sub_002EF9A1);
 X86_FUNC(sub_002EF9A1) {
+    if (app::Get().shadow_filter == 0) {
+        ctx.esp += 4;
+        return;
+    }
     bool soft = app::Get().shadow_filter >= 3 && R32(ctx.esp) == kDrawLevelReturn;
     if (soft) d3d::FilterShadows(&G<float>(R32(ctx.ebx) + kCameraToScreen));
     __imp__sub_002EF9A1(ctx, base);

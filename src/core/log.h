@@ -17,11 +17,7 @@ void Write(Level lv, const char* fmt, ...) __attribute__((format(printf, 2, 3)))
 void Flush();
 const std::string& Path();
 
-#ifdef NDEBUG
-inline constexpr bool kVerbose = false;
-#else
 inline constexpr bool kVerbose = true;
-#endif
 
 }  // namespace logx
 
