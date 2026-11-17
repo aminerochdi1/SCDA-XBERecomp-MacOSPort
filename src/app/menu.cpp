@@ -560,10 +560,17 @@ bool StepGraphicsRow(int id, int step, Settings& s, char (&text)[64]) {
             std::snprintf(text, sizeof(text), scale == 1 ? "%ux (DEFAULT)" : "%ux", scale);
             return true;
         }
-        case kShadowFilter:
-            if (step) s.shadow_filter = StepIndex(s.shadow_filter >= 3, step, 2) ? 3 : 1;
-            std::snprintf(text, sizeof(text), "%s", s.shadow_filter >= 3 ? "SM3 SOFT" : "SM1.1 (DEFAULT)");
+        case kShadowFilter: {
+            static const uint32_t kModes[3] = {0, 1, 3};
+            int cur = s.shadow_filter >= 3 ? 2 : (s.shadow_filter == 1 ? 1 : 0);
+            if (step) {
+                cur = StepIndex(cur, step, 3);
+                s.shadow_filter = kModes[cur];
+            }
+            std::snprintf(text, sizeof(text), "%s",
+                          cur == 2 ? "SM3 SOFT" : (cur == 1 ? "SM1.1 (CONSOLE)" : "OFF (SHARP)"));
             return true;
+        }
         default:
             return false;
     }

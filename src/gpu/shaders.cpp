@@ -436,10 +436,14 @@ float3 dot01(float4 c) { return c.rgb; }
 float3 dotd3d(float4 c) { return float3(sgn1(c.r), sgn1(c.g), sgn1(c.b)); }
 float3 dotgl(float4 c) { return float3(sgn2(c.r), sgn2(c.g), sgn2(c.b)); }
 float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
-// the sampler compares, a linear filter blends the four results like the console does
-// Subtract a constant bias to eliminate self-shadowing acne / checkerboard moiré patterns on surfaces.
-#define shadow(t, s, uv, z, fmt) \
-    ((t).SampleCmpLevelZero((s), (uv), (clamp((z) - ((fmt) == 2 ? 32.0f : 128.0f), 0.0f, ((fmt) == 2 ? 65535.0f : 16777215.0f)) / ((fmt) == 2 ? 65535.0f : 16777215.0f))).xxxx)
+// the sampler compares, a linear filter blends the four results like the console does.
+// Applies slope-scaled depth bias to eliminate shadow acne / cross-hatching moiré patterns on Apple Silicon / Vulkan.
+float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt) {
+    float mx = fmt == 2 ? 65535.0f : 16777215.0f;
+    float dz = max(abs(ddx(z)), abs(ddy(z)));
+    float bias = fmt == 2 ? clamp(64.0f + 2.5f * dz, 64.0f, 512.0f) : clamp(128.0f + 2.0f * dz, 128.0f, 1024.0f);
+    return t.SampleCmpLevelZero(s, uv, clamp(z - bias, 0.0f, mx) / mx).xxxx;
+}
 float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
@@ -850,11 +854,25 @@ std::string PixelHlsl(const PixelKey& k) {
     return k.quad ? QuadHlsl(std::move(s)) : s;
 }
 
-// Pulling a quad's far edges out to cover the target stretches what it carries.
-// Previously QuadHlsl injected an unstretch() routine using ddx/ddy screen-space derivatives. On Apple Silicon Metal
-// (TBDR architecture) and Vulkan, dividing by derivatives caused division-by-zero / NaNs and severe square-block /
-// checkerboard tile artifacts across the screen. Neutralizing it eliminates those artifacts completely.
+// Pulling a quad's far edges out to cover the target stretches what it carries. Its vertex shader hands on the pixel
+// position as drawn and as pulled (e), its pixel shader takes the stretch back out of the texture coordinates.
 std::string QuadHlsl(std::string s) {
+    auto sub = [&](const char* at, const char* before, const char* after) {
+        size_t p = s.find(at);
+        if (p != std::string::npos) s.replace(p, std::strlen(at), std::string(before) + at + after);
+    };
+    sub("    float fog : TEXCOORD4;\n", "", "    noperspective float4 e : TEXCOORD5;\n");
+    sub("    if (abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;\n", "    o.e.xy = p.xy;\n", "");
+    sub("    if (abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;\n", "", "    o.e.zw = p.xy;\n");
+    sub("    o.pos = cp;\n", "    o.e = float4(sp, (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy);\n", "");
+    sub("float4 main(VOut i, bool front", R"(float4 unstretch(float4 t, float4 e) {
+    float2 d = e.zw - e.xy, g = float2(ddx(e.x), ddy(e.y));
+    float4 x_adj = abs(g.x) > 1e-5f ? (d.x / g.x * ddx(t)) : float4(0, 0, 0, 0);
+    float4 y_adj = abs(g.y) > 1e-5f ? (d.y / g.y * ddy(t)) : float4(0, 0, 0, 0);
+    return t + x_adj + y_adj;
+}
+)", "");
+    for (int i = 0; i < 4; i++) sub(F("i.t%d", i).c_str(), "unstretch(", ", i.e)");
     return s;
 }
 
