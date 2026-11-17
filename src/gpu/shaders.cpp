@@ -327,9 +327,7 @@ struct Ps {
         uint32_t map = fl & 0x38;
         code += F("%s ab%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(ab, map).c_str());
         code += F("%s cd%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(cd, map).c_str());
-        std::string sum = (fl & 4) ? F("((%s) ? (%s)%s : (%s)%s)",
-                                       ((k.count >> 8) & 1) ? "r0.a >= 0.5" : "(uint(r0.a * 255) & 1) == 1", T,
-                                       cd.c_str(), T, ab.c_str())
+        std::string sum = (fl & 4) ? F("((r0.a >= 0.5) ? (%s)%s : (%s)%s)", T, cd.c_str(), T, ab.c_str())
                                    : "(" + ab + " + " + cd + ")";
         code += F("%s ms%s = clamp((%s)%s, -1, 1);\n", T, n, T, Map(sum, map).c_str());
         std::string post;
@@ -442,10 +440,11 @@ float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
 // Inlined as a macro so SPIRV-Cross correctly infers depth2d on MoltenVK/Apple Silicon without
 // generating an invalid helper function with mismatched texture2d/depth2d parameter types.
 // Bounds guard protects sky and background geometry outside the light frustum from shadow darkening.
-// Clean depth slope bias using max(abs(ddx(z)), abs(ddy(z))) eliminates angled surface self-shadowing acne.
+// Objects at or beyond far plane (z >= 65000) are protected from shadow occlusion to keep sky dome clear.
+// Small constant bias prevents self-shadowing acne without derivative steps or checkerboard artifacts.
 #define shadow(t, s, uv, z, fmt, sz) \
-    (((uv).x < 0.0f || (uv).x > 1.0f || (uv).y < 0.0f || (uv).y > 1.0f || (z) <= 0.0f) ? float4(1, 1, 1, 1) : \
-     ((t).SampleCmpLevelZero((s), (uv), clamp((z) - clamp(((fmt) == 2 ? 48.0f : 128.0f) + 2.0f * max(abs(ddx(z)), abs(ddy(z))), ((fmt) == 2 ? 48.0f : 128.0f), ((fmt) == 2 ? 512.0f : 2048.0f)), 0.0f, ((fmt) == 2 ? 65535.0f : 16777215.0f)) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx))
+    (((uv).x < 0.0f || (uv).x > 1.0f || (uv).y < 0.0f || (uv).y > 1.0f || (z) <= 0.0f || (z) >= ((fmt) == 2 ? 65000.0f : 16700000.0f)) ? float4(1, 1, 1, 1) : \
+     ((t).SampleCmpLevelZero((s), (uv), clamp((z) - ((fmt) == 2 ? 16.0f : 64.0f), 0.0f, ((fmt) == 2 ? 65535.0f : 16777215.0f)) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx))
 float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
