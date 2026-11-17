@@ -1944,7 +1944,10 @@ Target* VulkanBackend::EnsureTarget(const Surface& s, bool depth) {
     t.depth = depth;
     t.gw = gw;
     t.gh = gh;
-    float sc = shadow && shadow_res_ ? float(shadow_res_) / gw : EffectTarget(gw, gh) ? std::min(scale_, 1.0f) : scale_;
+    const ShadowTargets& sh = g_shadow;
+    bool is_blur = sh.blur_hi && !depth && s.data >= sh.blur_lo && s.data < sh.blur_hi;
+    float sc = shadow && shadow_res_ ? float(shadow_res_) / gw :
+               (is_blur || !EffectTarget(gw, gh)) ? scale_ : std::min(scale_, 1.0f);
     t.w = std::max(1u, uint32_t(std::lround(gw * sc)));
     t.h = std::max(1u, uint32_t(std::lround(gh * sc)));
     ImageDesc d{depth ? depth_fmt_ : kBgra, t.w, t.h};

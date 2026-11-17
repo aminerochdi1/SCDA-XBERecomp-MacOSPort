@@ -379,13 +379,13 @@ std::string TexFetch(const PixelKey& k, int i) {
         case 0: return F("float4 t%d = float4(0,0,0,1);\n", i);
         case 1:  // project 2d
             if (t.shadow)
-                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, 0, %d);\n", i, i, i, i, i,
-                         norm.c_str(), t.shadow);
+                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, 0, %d, texsize[%d].xy);\n", i, i, i, i, i,
+                         norm.c_str(), t.shadow, i);
             return F("float4 t%d = %s;\n", i, sample2(F("pT%d.xy / pT%d.w", i, i)).c_str());
         case 2:  // project 3d
             if (t.shadow)
-                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d);\n", i, i,
-                         i, i, i, norm.c_str(), i, i, t.shadow);
+                return F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d, texsize[%d].xy);\n", i, i,
+                         i, i, i, norm.c_str(), i, i, t.shadow, i);
             return F("float4 t%d = %s;\n", i, sample3(F("pT%d.xyz / pT%d.w", i, i)).c_str());
         case 3: return F("float4 t%d = %s;\n", i, sample3(F("pT%d.xyz", i)).c_str());
         case 4: return F("float4 t%d = pT%d;\n", i, i);
@@ -439,7 +439,21 @@ float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
 // the sampler compares, a linear filter blends the four results like the console does.
 // Inlined as a macro so SPIRV-Cross correctly infers depth2d on MoltenVK/Apple Silicon without
 // generating an invalid helper function with mismatched texture2d/depth2d parameter types.
-#define shadow(t, s, uv, z, fmt) ((t).SampleCmpLevelZero((s), (uv), clamp((z) - ((fmt) == 2 ? clamp(64.0f + 2.5f * max(abs(ddx(z)), abs(ddy(z))), 64.0f, 512.0f) : clamp(128.0f + 2.0f * max(abs(ddx(z)), abs(ddy(z))), 128.0f, 1024.0f)), 0.0f, (fmt) == 2 ? 65535.0f : 16777215.0f) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx)
+// Calculates exact shadow-texel slope bias from UV derivatives to eliminate shadow acne on angled geometry.
+float shadow_bias(float2 uv, float z, int fmt, float2 sz) {
+    float2 duv_x = ddx(uv), duv_y = ddy(uv);
+    float dz_x = ddx(z), dz_y = ddy(z);
+    float det = abs(duv_x.x * duv_y.y - duv_x.y * duv_y.x);
+    float slope_u = det > 1e-7f ? abs(dz_x * duv_y.y - dz_y * duv_x.y) / det : 0.0f;
+    float slope_v = det > 1e-7f ? abs(dz_y * duv_x.x - dz_x * duv_y.x) / det : 0.0f;
+    float texel_dz = (slope_u / max(sz.x, 1.0f)) + (slope_v / max(sz.y, 1.0f));
+    float base_bias = fmt == 2 ? 32.0f : 64.0f;
+    float max_bias = fmt == 2 ? 4096.0f : 16384.0f;
+    return clamp(base_bias + 1.5f * texel_dz, base_bias, max_bias);
+}
+
+#define shadow(t, s, uv, z, fmt, sz) \
+    ((t).SampleCmpLevelZero((s), (uv), clamp((z) - shadow_bias((uv), (z), (fmt), (sz)), 0.0f, (fmt) == 2 ? 65535.0f : 16777215.0f) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx)
 float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
@@ -824,8 +838,8 @@ std::string PixelHlsl(const PixelKey& k) {
             std::string norm = (t.rect ? F(" / texsize[%d].xy", i) : "") + F(" + texsize[%d].zw", i);
             std::string uv = (k.proj >> i) & 1 ? F("(pT%d.xy / pT%d.w)%s", i, i, norm.c_str()) : F("pT%d.xy%s", i, norm.c_str());
             if (t.shadow)
-                body += F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d);\n", i, i,
-                          i, i, i, norm.c_str(), i, i, t.shadow);
+                body += F("float4 t%d = shadow(tex%d, smp%d, (pT%d.xy / pT%d.w)%s, pT%d.z / pT%d.w, %d, texsize[%d].xy);\n", i, i,
+                          i, i, i, norm.c_str(), i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
                 body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, (t.flags & kTexHdr) ? "hdr.y" : "1");
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());

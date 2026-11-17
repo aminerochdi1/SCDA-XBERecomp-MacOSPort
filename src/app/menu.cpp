@@ -551,7 +551,7 @@ bool StepGraphicsRow(int id, int step, Settings& s, char (&text)[64]) {
             return true;
         case kShadowResolution: {
             uint32_t size = kShadowSizes[StepTable(kShadowSizes, s.shadow_resolution, step)];
-            if (size) std::snprintf(text, sizeof(text), size == 512 ? "%u (DEFAULT)" : "%u", size);
+            if (size) std::snprintf(text, sizeof(text), size == 2048 ? "%u (DEFAULT)" : (size == 512 ? "%u (CONSOLE)" : "%u"), size);
             else std::snprintf(text, sizeof(text), "AUTOMATIC");
             return true;
         }
