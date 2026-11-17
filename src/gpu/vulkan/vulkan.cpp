@@ -848,6 +848,7 @@ private:
     bool depth_linear_ = true;    // depth textures filter linearly
     VkFormat depth_fmt_ = VK_FORMAT_D24_UNORM_S8_UINT;
     VkDeviceSize ubo_align_ = 256;
+    VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
     // swapchain, in the panel's own orientation
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat swap_fmt_ = kBgra;
@@ -997,6 +998,11 @@ VulkanBackend::~VulkanBackend() {
         for (Frame& f : frames_)
             if (f.timestamps) vkDestroyQueryPool(dev_, f.timestamps, nullptr);
     }
+    if (debug_messenger_) {
+        auto pfnDestroy = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT");
+        if (pfnDestroy) pfnDestroy(instance_, debug_messenger_, nullptr);
+        debug_messenger_ = VK_NULL_HANDLE;
+    }
 }
 
 bool VulkanBackend::Init(uint32_t width, uint32_t height) {
@@ -1038,6 +1044,37 @@ bool VulkanBackend::CreateInstance() {
     std::vector<const char*> ext(sdl_ext, sdl_ext + count);
     ext.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 
+    uint32_t inst_ext_count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, nullptr);
+    std::vector<VkExtensionProperties> inst_exts(inst_ext_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, inst_exts.data());
+    bool has_debug_utils = false;
+    for (const auto& e : inst_exts) {
+        if (std::strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+            has_debug_utils = true;
+            break;
+        }
+    }
+    if (has_debug_utils) ext.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+    VkDebugUtilsMessengerCreateInfoEXT dbg_ci{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    dbg_ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    dbg_ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    dbg_ci.pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT sev,
+                                VkDebugUtilsMessageTypeFlagsEXT type,
+                                const VkDebugUtilsMessengerCallbackDataEXT* data,
+                                void*) -> VkBool32 {
+        if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            LOGE("MoltenVK: %s", data->pMessage);
+        } else if (sev >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+            LOGW("MoltenVK: %s", data->pMessage);
+        }
+        return VK_FALSE;
+    };
+
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "SCDA";
     uint32_t loader = VK_API_VERSION_1_1;
@@ -1046,10 +1083,16 @@ bool VulkanBackend::CreateInstance() {
     app.apiVersion = instance_version_;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    if (has_debug_utils) ci.pNext = &dbg_ci;
     ci.pApplicationInfo = &app;
     ci.enabledExtensionCount = static_cast<uint32_t>(ext.size());
     ci.ppEnabledExtensionNames = ext.data();
     VK_TRY(vkCreateInstance(&ci, nullptr, &instance_));
+
+    if (has_debug_utils) {
+        auto pfnCreate = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT");
+        if (pfnCreate) pfnCreate(instance_, &dbg_ci, nullptr, &debug_messenger_);
+    }
     return true;
 }
 

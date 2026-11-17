@@ -437,13 +437,9 @@ float3 dotd3d(float4 c) { return float3(sgn1(c.r), sgn1(c.g), sgn1(c.b)); }
 float3 dotgl(float4 c) { return float3(sgn2(c.r), sgn2(c.g), sgn2(c.b)); }
 float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
 // the sampler compares, a linear filter blends the four results like the console does.
-// Applies slope-scaled depth bias to eliminate shadow acne / cross-hatching moiré patterns on Apple Silicon / Vulkan.
-float4 shadow(Texture2D<float> t, SamplerComparisonState s, float2 uv, float z, int fmt) {
-    float mx = fmt == 2 ? 65535.0f : 16777215.0f;
-    float dz = max(abs(ddx(z)), abs(ddy(z)));
-    float bias = fmt == 2 ? clamp(64.0f + 2.5f * dz, 64.0f, 512.0f) : clamp(128.0f + 2.0f * dz, 128.0f, 1024.0f);
-    return t.SampleCmpLevelZero(s, uv, clamp(z - bias, 0.0f, mx) / mx).xxxx;
-}
+// Inlined as a macro so SPIRV-Cross correctly infers depth2d on MoltenVK/Apple Silicon without
+// generating an invalid helper function with mismatched texture2d/depth2d parameter types.
+#define shadow(t, s, uv, z, fmt) ((t).SampleCmpLevelZero((s), (uv), clamp((z) - ((fmt) == 2 ? clamp(64.0f + 2.5f * max(abs(ddx(z)), abs(ddy(z))), 64.0f, 512.0f) : clamp(128.0f + 2.0f * max(abs(ddx(z)), abs(ddy(z))), 128.0f, 1024.0f)), 0.0f, (fmt) == 2 ? 65535.0f : 16777215.0f) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx)
 float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
