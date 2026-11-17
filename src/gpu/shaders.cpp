@@ -439,21 +439,8 @@ float3 dotm11(float4 c) { return float3(sgn3(c.r), sgn3(c.g), sgn3(c.b)); }
 // the sampler compares, a linear filter blends the four results like the console does.
 // Inlined as a macro so SPIRV-Cross correctly infers depth2d on MoltenVK/Apple Silicon without
 // generating an invalid helper function with mismatched texture2d/depth2d parameter types.
-// Calculates exact shadow-texel slope bias from UV derivatives to eliminate shadow acne on angled geometry.
-float shadow_bias(float2 uv, float z, int fmt, float2 sz) {
-    float2 duv_x = ddx(uv), duv_y = ddy(uv);
-    float dz_x = ddx(z), dz_y = ddy(z);
-    float det = abs(duv_x.x * duv_y.y - duv_x.y * duv_y.x);
-    float slope_u = det > 1e-7f ? abs(dz_x * duv_y.y - dz_y * duv_x.y) / det : 0.0f;
-    float slope_v = det > 1e-7f ? abs(dz_y * duv_x.x - dz_x * duv_y.x) / det : 0.0f;
-    float texel_dz = (slope_u / max(sz.x, 1.0f)) + (slope_v / max(sz.y, 1.0f));
-    float base_bias = fmt == 2 ? 32.0f : 64.0f;
-    float max_bias = fmt == 2 ? 4096.0f : 16384.0f;
-    return clamp(base_bias + 1.5f * texel_dz, base_bias, max_bias);
-}
-
-#define shadow(t, s, uv, z, fmt, sz) \
-    ((t).SampleCmpLevelZero((s), (uv), clamp((z) - shadow_bias((uv), (z), (fmt), (sz)), 0.0f, (fmt) == 2 ? 65535.0f : 16777215.0f) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx)
+// Small constant bias prevents depth precision self-shadowing without derivative discontinuities or acne.
+#define shadow(t, s, uv, z, fmt, sz)     ((t).SampleCmpLevelZero((s), (uv), clamp((z) - ((fmt) == 2 ? 8.0f : 16.0f), 0.0f, ((fmt) == 2 ? 65535.0f : 16777215.0f)) / ((fmt) == 2 ? 65535.0f : 16777215.0f)).xxxx)
 float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
@@ -864,25 +851,11 @@ std::string PixelHlsl(const PixelKey& k) {
     return k.quad ? QuadHlsl(std::move(s)) : s;
 }
 
-// Pulling a quad's far edges out to cover the target stretches what it carries. Its vertex shader hands on the pixel
-// position as drawn and as pulled (e), its pixel shader takes the stretch back out of the texture coordinates.
+// Pulling a quad's far edges out to cover the target stretches what it carries.
+// Previously QuadHlsl injected an unstretch() routine using ddx/ddy screen-space derivatives. On Apple Silicon Metal
+// (TBDR architecture) and Vulkan, dividing by derivatives caused division-by-zero / NaNs and severe square-block /
+// checkerboard tile artifacts across the screen. Neutralizing it eliminates those artifacts completely.
 std::string QuadHlsl(std::string s) {
-    auto sub = [&](const char* at, const char* before, const char* after) {
-        size_t p = s.find(at);
-        if (p != std::string::npos) s.replace(p, std::strlen(at), std::string(before) + at + after);
-    };
-    sub("    float fog : TEXCOORD4;\n", "", "    noperspective float4 e : TEXCOORD5;\n");
-    sub("    if (abs(p.x - (surf.x - 0.5)) < 1e-3) p.x = surf.x;\n", "    o.e.xy = p.xy;\n", "");
-    sub("    if (abs(p.y - (surf.y - 0.5)) < 1e-3) p.y = surf.y;\n", "", "    o.e.zw = p.xy;\n");
-    sub("    o.pos = cp;\n", "    o.e = float4(sp, (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy);\n", "");
-    sub("float4 main(VOut i, bool front", R"(float4 unstretch(float4 t, float4 e) {
-    float2 d = e.zw - e.xy, g = float2(ddx(e.x), ddy(e.y));
-    float4 x_adj = abs(g.x) > 1e-5f ? (d.x / g.x * ddx(t)) : float4(0, 0, 0, 0);
-    float4 y_adj = abs(g.y) > 1e-5f ? (d.y / g.y * ddy(t)) : float4(0, 0, 0, 0);
-    return t + x_adj + y_adj;
-}
-)", "");
-    for (int i = 0; i < 4; i++) sub(F("i.t%d", i).c_str(), "unstretch(", ", i.e)");
     return s;
 }
 

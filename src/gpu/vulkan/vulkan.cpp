@@ -412,6 +412,8 @@ struct DrawTextures {
     StageView bind[4];
     uint32_t levels[4] = {};
     bool rt[4] = {};     // stage samples a render target
+    uint32_t target_w[4] = {};
+    uint32_t target_h[4] = {};
     float wide[4] = {};  // host texels per console texel of a target read into a smaller one, 0 otherwise
 };
 
@@ -565,16 +567,18 @@ void FillCombinerConstants(const State& s, DrawConstants& c) {
 }
 
 void FillTexelConstants(int i, const TextureDesc& d, const DrawTextures& stages, DrawConstants& c) {
-    c.texsize[i][0] = float(d.width);
-    c.texsize[i][1] = float(d.height);
+    float w = stages.rt[i] && stages.target_w[i] ? float(stages.target_w[i]) : float(d.width);
+    float h = stages.rt[i] && stages.target_h[i] ? float(stages.target_h[i]) : float(d.height);
+    c.texsize[i][0] = w;
+    c.texsize[i][1] = h;
     // the console samples pixels at integer positions, Vulkan half a pixel on: targets are read half a texel back
     if (!stages.rt[i]) return;
-    c.texsize[i][2] = -0.5f / float(d.width);
-    c.texsize[i][3] = -0.5f / float(d.height);
+    c.texsize[i][2] = -0.5f / w;
+    c.texsize[i][3] = -0.5f / h;
     if (stages.wide[i] > 0) {
         float n = std::ceil(kGlowBoxTexels * stages.wide[i] * 0.5f);
-        c.spread[i][0] = kGlowBoxTexels / (n * float(d.width));
-        c.spread[i][1] = kGlowBoxTexels / (n * float(d.height));
+        c.spread[i][0] = kGlowBoxTexels / (n * w);
+        c.spread[i][1] = kGlowBoxTexels / (n * h);
         c.spread[i][2] = n;
     }
 }
@@ -2044,6 +2048,8 @@ void VulkanBackend::BindTargetTexture(const State& s, int stage, const TextureDe
     TexInfo& info = stages.info[stage];
     if (&t == draw_ds_) return;
     stages.rt[stage] = true;
+    stages.target_w[stage] = t.w;
+    stages.target_h[stage] = t.h;
     stages.levels[stage] = 1;
     if (profile_) stats_.tex_rt++, stats_.tex_texels += uint64_t(t.w) * t.h;
     if (!t.depth && LatchCpuWrite(t)) {
