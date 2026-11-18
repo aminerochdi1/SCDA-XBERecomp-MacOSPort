@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cwchar>
 #include <thread>
 
@@ -486,6 +487,11 @@ void Pace() {
 }  // namespace app
 
 int main(int argc, char** argv) {
+#ifdef __APPLE__
+    // MoltenVK's default fast math breaks the bit exact positions the EQUAL depth passes need (blocky squares and
+    // hatching on lit surfaces). Set before the Vulkan instance exists; a value already in the environment wins.
+    setenv("MVK_CONFIG_FAST_MATH_ENABLED", "0", 0);
+#endif
 #if !defined(_WIN32)
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
